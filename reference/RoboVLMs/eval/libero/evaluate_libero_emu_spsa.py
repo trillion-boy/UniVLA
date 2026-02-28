@@ -1,0 +1,298 @@
+"""
+Evaluate EmuVLAModelSPSA via LIBERO Benchmark.
+
+This is a variant of evaluate_libero_emu.py that uses EmuVLAModelSPSA
+(ControlMLLM-style visual broadcast injection + warm-start SPSA) instead
+of the baseline EmuVLAModel. The original evaluate_libero_emu.py is
+unchanged.
+
+Key differences from evaluate_libero_emu.py:
+  - Imports EmuVLAModelSPSA from model_wrapper_emu_spsa
+  - Passes current_step to model.step() for adaptive threshold
+  - Exposes SPSA hyperparameters as CLI args
+"""
+
+import traceback
+import argparse
+import json
+import logging
+from pathlib import Path
+import time
+import sys
+import os
+import numpy as np
+
+sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())
+
+from pytorch_lightning import seed_everything
+import torch
+import torch.distributed as dist
+
+from model_wrapper_emu_spsa import EmuVLAModelSPSA
+from libero_utils import save_rollout_gif, get_libero_image, get_episode_length, get_libero_wrist_image, quat2axisangle
+from libero_utils import get_libero_dummy_action, get_libero_env
+from libero.libero import benchmark
+
+logging.basicConfig(
+    level=logging.INFO, format="[%(asctime)s - %(name)s - %(levelname)s - %(message)s]"
+)
+logger = logging.getLogger(__name__)
+
+
+def world_info_from_env():
+    local_rank = 0
+    for v in ("LOCAL_RANK", "MPI_LOCALRANKID", "SLURM_LOCALID", "OMPI_COMM_WORLD_LOCAL_RANK"):
+        if v in os.environ:
+            local_rank = int(os.environ[v])
+            break
+    global_rank = 0
+    for v in ("RANK", "PMI_RANK", "SLURM_PROCID", "OMPI_COMM_WORLD_RANK"):
+        if v in os.environ:
+            global_rank = int(os.environ[v])
+            break
+    world_size = 1
+    for v in ("WORLD_SIZE", "PMI_SIZE", "SLURM_NTASKS", "OMPI_COMM_WORLD_SIZE"):
+        if v in os.environ:
+            world_size = int(os.environ[v])
+            break
+    return local_rank, global_rank, world_size
+
+
+def setup():
+    dist.init_process_group(backend="nccl")
+    os.environ["EGL_VISIBLE_DEVICES"] = os.environ["LOCAL_RANK"]
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
+
+def evaluate(
+    model,
+    model_name=None,
+    debug=False,
+    resize_size=256,
+    num_trials_per_task=50,
+    num_steps_wait=10,
+    local_log_dir=None,
+    task_suite_name="libero_object",
+):
+    run_id = f"{task_suite_name}-{time.strftime('%Y-%m-%d_%H:%M')}"
+    os.makedirs(local_log_dir, exist_ok=True)
+    local_log_filepath = os.path.join(local_log_dir, run_id + ".txt")
+    log_file = open(local_log_filepath, "w")
+    logger.info(f"Logging to local log file: {local_log_filepath}")
+
+    conf_log_filepath = os.path.join(local_log_dir, run_id + "_confidence.jsonl")
+    conf_log_file = open(conf_log_filepath, "w")
+    logger.info(f"Logging confidence to: {conf_log_filepath}")
+
+    benchmark_dict = benchmark.get_benchmark_dict()
+    task_suite = benchmark_dict[task_suite_name]()
+    num_tasks_in_suite = task_suite.n_tasks
+    logger.info(f"Task suite: {task_suite_name}")
+    log_file.write(f"Task suite: {task_suite_name}\n")
+    EP_LEN = get_episode_length(task_suite_name)
+
+    total_episodes, total_successes = 0, 0
+    for task_id in range(num_tasks_in_suite):
+        task = task_suite.get_task(task_id)
+        initial_states = task_suite.get_task_init_states(task_id)
+        env, task_description = get_libero_env(task, resolution=256)
+        task_episodes, task_successes = 0, 0
+        logger.info(f"\nTask: {task_description}")
+        log_file.write(f"\nTask: {task_description}\n")
+
+        for episode_idx in range(num_trials_per_task):
+            env.reset()
+            model.reset()
+
+            obs = env.set_init_state(initial_states[episode_idx])
+
+            t = 0
+            replay_images = []
+            episode_confidences = []
+
+            print(f"Starting episode {task_episodes + 1}...")
+            log_file.write(f"Starting episode {task_episodes + 1}...\n")
+            action_counter = 0
+
+            while t < EP_LEN + num_steps_wait:
+                try:
+                    if t < num_steps_wait:
+                        obs, reward, done, info = env.step(get_libero_dummy_action())
+                        t += 1
+                        continue
+
+                    observation, img = prepare_observation(obs, resize_size)
+                    replay_images.append(img)
+
+                    if action_counter == 0:
+                        # Pass current_step for adaptive SPSA threshold
+                        current_step = t - num_steps_wait
+                        action, chunk_conf = model.step(observation, task_description, current_step=current_step)
+                        action_counter = action.shape[0]
+                        episode_confidences.append({
+                            "step": t,
+                            "current_step": current_step,
+                            "confidence": chunk_conf,
+                            "rolling_conf": float(model.rolling_conf),
+                        })
+
+                    step_action = action[-action_counter]
+                    obs, reward, done, info = env.step(step_action.tolist())
+                    action_counter -= 1
+                    if done:
+                        task_successes += 1
+                        total_successes += 1
+                        break
+                    t += 1
+
+                except Exception as e:
+                    print(f"Caught exception: {e}")
+                    log_file.write(f"Caught exception: {e}\n")
+                    traceback.print_exc()
+                    break
+
+            task_episodes += 1
+            total_episodes += 1
+
+            if episode_confidences:
+                conf_values = [c["confidence"] for c in episode_confidences]
+                episode_record = {
+                    "task": task_description,
+                    "episode": episode_idx,
+                    "success": bool(done),
+                    "mean_confidence": float(np.mean(conf_values)),
+                    "min_confidence": float(np.min(conf_values)),
+                    "max_confidence": float(np.max(conf_values)),
+                    "confidences": episode_confidences,
+                }
+                conf_log_file.write(json.dumps(episode_record) + "\n")
+                conf_log_file.flush()
+
+            if debug and len(replay_images) > 0:
+                gif_dir = os.path.join(local_log_dir, "videos-{}".format(run_id))
+                os.makedirs(gif_dir, exist_ok=True)
+                gif_path = os.path.join(gif_dir, f"Episodes{total_episodes}_{str(done)}.gif")
+                save_rollout_gif(replay_images, gif_path, fps=15)
+
+            logger.info(f"Success: {done}")
+            logger.info(f"# episodes completed so far: {total_episodes}")
+            logger.info(
+                f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
+            )
+            log_file.write(f"Success: {done}\n")
+            log_file.write(f"# episodes completed so far: {total_episodes}\n")
+            log_file.write(
+                f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n"
+            )
+            log_file.flush()
+
+        logger.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
+        logger.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
+        log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
+        log_file.flush()
+
+    log_file.close()
+    conf_log_file.close()
+
+
+def prepare_observation(obs, resize_size):
+    img = get_libero_image(obs)
+    wrist_img = get_libero_wrist_image(obs)
+    observation = {
+        "full_image": img,
+        "wrist_image": wrist_img,
+        "state": np.concatenate(
+            (obs["robot0_eef_pos"], quat2axisangle(obs["robot0_eef_quat"]), obs["robot0_gripper_qpos"])
+        ),
+    }
+    return observation, img
+
+
+def parser_args():
+    seed_everything(0, workers=True)
+    parser = argparse.ArgumentParser(
+        description="Evaluate EmuVLAModelSPSA (ControlMLLM visual broadcast + warm-start) on LIBERO."
+    )
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--config_path", type=str, default=None)
+    parser.add_argument("--emu_hub", type=str, default="")
+    parser.add_argument("--vq_hub", type=str, default="")
+    parser.add_argument("--vision_hub", type=str, default="")
+    parser.add_argument("--fast_hub", type=str, default="",
+                        help="Path to FAST action tokenizer. Auto-detected if empty.")
+    parser.add_argument(
+        "--task_suite_name",
+        type=str,
+        choices=["libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"],
+    )
+    parser.add_argument("--device_id", default=0, type=int)
+    parser.add_argument("--no_nccl", action="store_true")
+    parser.add_argument("--no_action_ensemble", action="store_true")
+    parser.add_argument("--cache_root", type=str, default="./logs/libero")
+
+    # SPSA hyperparameters
+    parser.add_argument("--no_spsa", action="store_true",
+                        help="Disable SPSA (use persistent L passthrough only).")
+    parser.add_argument("--spsa_n", type=int, default=20,
+                        help="SPSA iterations per chunk (default 20 = 40 forward passes).")
+    parser.add_argument("--spsa_epsilon", type=float, default=0.05,
+                        help="Rademacher perturbation scale.")
+    parser.add_argument("--spsa_alpha", type=float, default=0.01,
+                        help="SPSA gradient ascent learning rate.")
+    parser.add_argument("--spsa_beta", type=float, default=0.9,
+                        help="Warm-start decay: L_persistent = beta * L_star.")
+    parser.add_argument("--spsa_threshold", type=float, default=0.60,
+                        help="Confidence threshold below which SPSA fires.")
+    parser.add_argument("--spsa_ep_len", type=int, default=300,
+                        help="Episode length for adaptive threshold decay.")
+    parser.add_argument("--ema_decay", type=float, default=0.5,
+                        help="EMA smoothing coefficient for rolling confidence.")
+
+    args = parser.parse_args()
+    return args
+
+
+def main():
+    args = parser_args()
+    if not args.no_nccl:
+        setup()
+
+    CACHE_ROOT = args.cache_root
+    os.makedirs(CACHE_ROOT, exist_ok=True)
+    eval_log_dir = os.path.join(CACHE_ROOT, 'eval')
+    os.makedirs(eval_log_dir, exist_ok=True)
+
+    args.local_rank, args.rank, args.world_size = world_info_from_env()
+
+    model = EmuVLAModelSPSA(
+        emu_hub=args.emu_hub,
+        vq_hub=args.vq_hub,
+        vision_hub=args.vision_hub,
+        device=torch.device("cuda"),
+        fast_hub=args.fast_hub or None,
+        use_spsa=not args.no_spsa,
+        spsa_n=args.spsa_n,
+        spsa_epsilon=args.spsa_epsilon,
+        spsa_alpha=args.spsa_alpha,
+        spsa_beta=args.spsa_beta,
+        spsa_threshold=args.spsa_threshold,
+        spsa_ep_len=args.spsa_ep_len,
+        ema_decay=args.ema_decay,
+    )
+
+    evaluate(
+        model,
+        task_suite_name=args.task_suite_name,
+        local_log_dir=eval_log_dir,
+        debug=args.debug,
+    )
+
+    if not args.no_nccl:
+        dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    os.environ["NCCL_BLOCKING_WAIT"] = "1"
+    os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
+    main()
