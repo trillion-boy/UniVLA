@@ -15,21 +15,20 @@ from transformers import LogitsProcessor
 
 class ActionIDConstraintLogitsProcessor(LogitsProcessor):
     def __init__(self, allowed_token_ids):
-        """
-        :param allowed_token_ids: 允许的token ID列表
-        """
         self.allowed_token_ids = allowed_token_ids
+        self.token_confidences = []  # per-token max prob after masking
 
     def __call__(self, input_ids, scores):
-        # 创建掩码：允许的token位置为True，其他为False
         mask = torch.zeros_like(scores, dtype=torch.bool)
         if mask.ndim == 1:
             mask[self.allowed_token_ids] = True
         else:
             mask[:, self.allowed_token_ids] = True
-        
-        # 将不允许的token概率设为负无穷
         scores[~mask] = -float("inf")
+
+        # softmax over allowed tokens → save max prob as confidence for this token
+        probs = torch.softmax(scores, dim=-1)
+        self.token_confidences.append(probs.max(dim=-1).values.item())
         return scores
 
 class EmuVLAModel:
@@ -60,6 +59,12 @@ class EmuVLAModel:
         self.use_cot = False  # always disable CoT
 
         self.video_mode = False
+
+        # SPSA optimization settings
+        self.use_spsa = False   # set True to enable L optimization at inference
+        self.spsa_n = 20        # number of SPSA iterations
+        self.spsa_epsilon = 0.05  # perturbation scale
+        self.spsa_alpha = 0.01    # learning rate
     
         # load model and tokenizer
         self.init_config(device=device)
@@ -250,22 +255,84 @@ class EmuVLAModel:
         else:
             final_inputs = pos_inputs
 
-        if self.use_fast: 
+        if self.use_fast:
             last_token_id = self.tokenizer.pad_token_id - 1
             allowed_token_ids = list(range(last_token_id - self.action_tokenizer.vocab_size, last_token_id + 1)) + [self.eoa_token_id]
-            action_id_processor = ActionIDConstraintLogitsProcessor(allowed_token_ids)
-            
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    final_inputs.input_ids.to(self.device),
-                    self.GENERATION_CONFIG,
+
+            def _run_generate(inputs_embeds=None, input_ids=None, attn_mask=None):
+                """Run one generate() call and return (outputs, chunk_confidence)."""
+                proc = ActionIDConstraintLogitsProcessor(allowed_token_ids)
+                gen_kwargs = dict(
                     max_new_tokens=80,
-                    logits_processor=[action_id_processor],
-                    attention_mask=final_inputs.attention_mask.to(self.device),
+                    logits_processor=[proc],
+                    attention_mask=attn_mask.to(self.device),
                 )
-            # omit the eoa token
-            orig_outputs = outputs[:, final_inputs.input_ids.shape[-1]:]
-            outputs = outputs[:, final_inputs.input_ids.shape[-1]:-1]
+                with torch.no_grad():
+                    if inputs_embeds is not None:
+                        out = self.model.generate(
+                            inputs_embeds=inputs_embeds,
+                            **{k: v for k, v in {
+                                'pad_token_id': self.GENERATION_CONFIG.pad_token_id,
+                                'bos_token_id': self.GENERATION_CONFIG.bos_token_id,
+                                'eos_token_id': self.GENERATION_CONFIG.eos_token_id,
+                                'do_sample': self.GENERATION_CONFIG.do_sample,
+                            }.items()},
+                            **gen_kwargs,
+                        )
+                    else:
+                        out = self.model.generate(
+                            input_ids.to(self.device),
+                            self.GENERATION_CONFIG,
+                            **gen_kwargs,
+                        )
+                conf = float(np.mean(proc.token_confidences)) if proc.token_confidences else 0.0
+                return out, conf
+
+            if self.use_spsa:
+                # --- SPSA optimization of L in embedding space ---
+                hidden_size = self.model.model.embed_tokens.weight.shape[1]  # 4096
+                L = torch.zeros(1, 1, hidden_size, dtype=torch.bfloat16, device=self.device)
+
+                # base embeddings (frozen, computed once)
+                with torch.no_grad():
+                    base_embeds = self.model.model.embed_tokens(
+                        final_inputs.input_ids.to(self.device)
+                    )  # (1, seq_len, hidden_size)
+                base_mask = final_inputs.attention_mask.to(self.device)
+                L_mask = torch.ones(1, 1, dtype=base_mask.dtype, device=self.device)
+                combined_mask = torch.cat([L_mask, base_mask], dim=1)
+
+                for _ in range(self.spsa_n):
+                    # random ±1 perturbation vector (Rademacher)
+                    delta = (2 * torch.bernoulli(
+                        torch.ones_like(L) * 0.5
+                    ) - 1) * self.spsa_epsilon
+
+                    embeds_plus  = torch.cat([L + delta, base_embeds], dim=1)
+                    embeds_minus = torch.cat([L - delta, base_embeds], dim=1)
+
+                    _, conf_plus  = _run_generate(inputs_embeds=embeds_plus,  attn_mask=combined_mask)
+                    _, conf_minus = _run_generate(inputs_embeds=embeds_minus, attn_mask=combined_mask)
+
+                    # SPSA gradient estimate → gradient ascent (maximize confidence)
+                    grad = (conf_plus - conf_minus) / (2.0 * self.spsa_epsilon)
+                    L = L + self.spsa_alpha * grad * delta / (delta ** 2 + 1e-8)
+
+                # final generate with optimized L*
+                embeds_star = torch.cat([L, base_embeds], dim=1)
+                outputs, chunk_confidence = _run_generate(inputs_embeds=embeds_star, attn_mask=combined_mask)
+                # outputs contains only generated tokens (no input prefix) when using inputs_embeds
+                orig_outputs = outputs
+                outputs = outputs[:, :-1]  # omit eoa token
+            else:
+                # --- Standard Block 3 generate (no SPSA) ---
+                outputs, chunk_confidence = _run_generate(
+                    input_ids=final_inputs.input_ids,
+                    attn_mask=final_inputs.attention_mask,
+                )
+                orig_outputs = outputs[:, final_inputs.input_ids.shape[-1]:]
+                outputs = outputs[:, final_inputs.input_ids.shape[-1]:-1]
+
             last_token_id_tensor = torch.tensor(last_token_id, dtype=outputs.dtype, device=outputs.device)
             processed_outputs = last_token_id_tensor - outputs
             action_outputs = self.action_tokenizer.decode(
@@ -276,8 +343,8 @@ class EmuVLAModel:
                 self.add_action(orig_outputs.detach().cpu())
 
         else:
-            pass
-        
+            chunk_confidence = 0.0
+
         # unnormalize action
         action = self.unormalize_action(action)
 
@@ -292,11 +359,11 @@ class EmuVLAModel:
         else:
             # action chunk
             action_pred = action
-        
+
         if self.use_cot:
-            return action_pred, thought
+            return action_pred, thought, chunk_confidence
         else:
-            return action_pred
+            return action_pred, chunk_confidence
     
     def unormalize_action(self, action):
         action_high = np.array([

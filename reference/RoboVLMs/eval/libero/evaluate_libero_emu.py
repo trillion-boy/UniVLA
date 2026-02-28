@@ -79,6 +79,11 @@ def evaluate(
     log_file = open(local_log_filepath, "w")
     logger.info(f"Logging to local log file: {local_log_filepath}")
 
+    # Confidence log (JSON lines: one record per episode)
+    conf_log_filepath = os.path.join(local_log_dir, run_id + "_confidence.jsonl")
+    conf_log_file = open(conf_log_filepath, "w")
+    logger.info(f"Logging confidence to: {conf_log_filepath}")
+
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[task_suite_name]()
@@ -110,6 +115,7 @@ def evaluate(
 
             t = 0
             replay_images = []
+            episode_confidences = []  # list of {step, confidence} per chunk call
 
             if model.use_cot:
                 thought = [""]
@@ -130,43 +136,16 @@ def evaluate(
                     # Prepare observation
                     observation, img = prepare_observation(obs, resize_size)
                     replay_images.append(img)
-                    
-                    if model.use_cot:
-                        # Create a white background for the text
-                        text_img = (
-                            np.ones((img.shape[0], 1000, 3), dtype=np.uint8) * 255
-                        )
-                        # Split thought into multiple lines
-                        lines = thought[0].replace("@", "\n").split("\n")
-                        # Add text lines
-                        for i, line in enumerate(lines):
-                            cv2.putText(
-                                text_img,
-                                line,
-                                (10, 30 + i * 20),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.5,
-                                (0, 0, 0),
-                                1,
-                            )
-                        # Concatenate original image with text image
-                        img = np.concatenate((img, text_img), axis=1)
-                        # Save a sample image for debugging
-                        # cv2.imwrite("sample_cot_image.png", img)
 
                     if action_counter == 0:
                         if model.use_cot:
-                            action, thought = model.step(obs_img, task_description)
+                            action, thought, chunk_conf = model.step(obs_img, task_description)
                         else:
-                            action = model.step(observation, task_description)
-                            # from PIL import Image
-                            # Image.fromarray(img).save(f"img_{t}_{action_counter}.png")
-                            # Image.fromarray(observation['wrist_image']).save(f"wrist_{t}_{action_counter}.png")
+                            action, chunk_conf = model.step(observation, task_description)
 
                         action_counter = action.shape[0]
+                        episode_confidences.append({"step": t, "confidence": chunk_conf})
 
-                    
-                    # logger.info(f"Action: {action.shape}")
                     step_action = action[-action_counter]
                     obs, reward, done, info = env.step(step_action.tolist())
                     action_counter -= 1
@@ -184,6 +163,21 @@ def evaluate(
 
             task_episodes += 1
             total_episodes += 1
+
+            # Save confidence record for this episode
+            if episode_confidences:
+                conf_values = [c["confidence"] for c in episode_confidences]
+                episode_record = {
+                    "task": task_description,
+                    "episode": episode_idx,
+                    "success": bool(done),
+                    "mean_confidence": float(np.mean(conf_values)),
+                    "min_confidence": float(np.min(conf_values)),
+                    "max_confidence": float(np.max(conf_values)),
+                    "confidences": episode_confidences,
+                }
+                conf_log_file.write(json.dumps(episode_record) + "\n")
+                conf_log_file.flush()
 
             # Save a replay video of the episode
             logger.info(f"Num of Steps: {len(replay_images)}")
@@ -224,6 +218,7 @@ def evaluate(
         log_file.flush()
 
     log_file.close()
+    conf_log_file.close()
 
 def prepare_observation(obs, resize_size):
     """Prepare observation for policy input."""
