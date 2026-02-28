@@ -8,7 +8,11 @@ from transformers import AutoModel, AutoImageProcessor, GenerationConfig, AutoPr
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation import LogitsProcessorList, PrefixConstrainedLogitsProcessor, UnbatchedClassifierFreeGuidanceLogitsProcessor
 import sys
-sys.path.append("/share/project/yuqi.wang/UniVLA/reference/Emu3")
+import pathlib as _pl
+# auto-resolve path to Emu3 regardless of working directory (Colab-compatible)
+_EMU3_PATH = str(_pl.Path(__file__).resolve().parents[4] / "reference" / "Emu3")
+if _EMU3_PATH not in sys.path:
+    sys.path.append(_EMU3_PATH)
 from emu3.mllm import Emu3Tokenizer, Emu3ForCausalLM, Emu3Processor
 from emu3.mllm import Emu3MoE
 from transformers import LogitsProcessor
@@ -38,13 +42,15 @@ class EmuVLAModel:
         emu_hub,
         vq_hub,
         vision_hub,
-        device
+        device,
+        fast_hub=None,
     ):
 
         self.emu_hub = emu_hub
         self.vq_hub = vq_hub
         self.vision_hub = vision_hub
         self.device = device
+        self.fast_hub = fast_hub or str(_pl.Path(__file__).resolve().parents[4] / "pretrain" / "fast")
 
         ## hard code here
         self.window_size = 2
@@ -97,7 +103,7 @@ class EmuVLAModel:
         self.model = Emu3MoE.from_pretrained(
             self.emu_hub,
             torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            attn_implementation="sdpa",
             trust_remote_code=True,
         )
         self.model.to(device).eval()
@@ -113,8 +119,7 @@ class EmuVLAModel:
         self.processor = Emu3Processor(self.image_processor, self.image_tokenizer, self.tokenizer)
 
         # fast tokenization
-        fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast"
-        self.action_tokenizer = AutoProcessor.from_pretrained(fast_path, trust_remote_code=True)
+        self.action_tokenizer = AutoProcessor.from_pretrained(self.fast_hub, trust_remote_code=True)
 
         self.rgb_list = []
         self.hand_rgb_list = []

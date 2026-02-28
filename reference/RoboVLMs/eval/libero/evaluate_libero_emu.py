@@ -275,8 +275,10 @@ def parser_args():
         "--ckpt_idx", type=int, default=-1, help="which ckpt is going to be evaluated"
     )
     parser.add_argument("--emu_hub", type=str, default="")
-    parser.add_argument("--vq_hub", type=str, default="/share/project/yuqi.wang/OmniSim/pretrain/Emu3-Base")
-    parser.add_argument("--vision_hub", type=str, default="/share/project/yuqi.wang/OmniSim/pretrain/Emu3-VisionVQ")
+    parser.add_argument("--vq_hub", type=str, default="")
+    parser.add_argument("--vision_hub", type=str, default="")
+    parser.add_argument("--fast_hub", type=str, default="",
+                        help="Path to FAST action tokenizer. Auto-detected if empty.")
     parser.add_argument(
         "--task_suite_name",
         type=str,
@@ -294,7 +296,7 @@ def parser_args():
     parser.add_argument("--debug_model", action="store_true")
     parser.add_argument("--no_nccl", action="store_true")
     parser.add_argument("--no_action_ensemble", action="store_true")
-    parser.add_argument('--cache_root', type=str, default="/share/project/yuqi.wang/UniVLA/logs/libero",
+    parser.add_argument('--cache_root', type=str, default="./logs/libero",
                         help="Root directory to store cache/logs.")
 
     args = parser.parse_args()
@@ -319,6 +321,7 @@ def main():
             vq_hub=args.vq_hub,
             vision_hub=args.vision_hub,
             device=torch.device("cuda"),
+            fast_hub=args.fast_hub or None,
         )
 
     sr_path = os.path.join(eval_log_dir, f"success_rate_calvin.txt")
