@@ -46,11 +46,13 @@ class EmuVLAModelSPSA(EmuVLAModel):
         spsa_epsilon=0.05,
         spsa_alpha=0.01,
         # Warm-start: L_persistent = beta * L_star  (0 = reset every chunk, 1 = no decay)
-        spsa_beta=0.9,
+        spsa_beta=0.7,
+        # L2-norm clipping: keeps L within distribution (~1% of typical embedding norm)
+        spsa_max_norm=1.0,
         # Confidence-triggered activation
         spsa_threshold=0.60,   # fire SPSA when rolling_conf < threshold
         spsa_ep_len=300,       # episode length for adaptive threshold decay
-        ema_decay=0.5,         # EMA smoothing of rolling confidence
+        ema_decay=0.3,         # EMA smoothing of rolling confidence
     ):
         super().__init__(emu_hub, vq_hub, vision_hub, device, fast_hub)
 
@@ -59,6 +61,7 @@ class EmuVLAModelSPSA(EmuVLAModel):
         self.spsa_epsilon = spsa_epsilon
         self.spsa_alpha = spsa_alpha
         self.spsa_beta = spsa_beta
+        self.spsa_max_norm = spsa_max_norm
         self.spsa_threshold = spsa_threshold
         self.spsa_ep_len = spsa_ep_len
         self.ema_decay = ema_decay
@@ -282,6 +285,11 @@ class EmuVLAModelSPSA(EmuVLAModel):
                     # SPSA gradient ascent (maximize confidence)
                     grad = (conf_plus - conf_minus) / (2.0 * self.spsa_epsilon)
                     L = L + self.spsa_alpha * grad * delta / (delta ** 2 + 1e-8)
+
+                    # L2-norm clipping: prevent distribution shift
+                    L_norm = torch.norm(L)
+                    if L_norm > self.spsa_max_norm:
+                        L = L * self.spsa_max_norm / L_norm
 
                 # Update persistent L with decay (warm-start for next chunk)
                 self.L_persistent = (self.spsa_beta * L).detach()
