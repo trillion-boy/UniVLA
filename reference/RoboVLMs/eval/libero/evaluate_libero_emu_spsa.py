@@ -69,10 +69,11 @@ def evaluate(
     model_name=None,
     debug=False,
     resize_size=256,
-    num_trials_per_task=50,
+    num_trials_per_task=10,
     num_steps_wait=10,
     local_log_dir=None,
     task_suite_name="libero_object",
+    max_tasks=None,
 ):
     run_id = f"{task_suite_name}-{time.strftime('%Y-%m-%d_%H:%M')}"
     os.makedirs(local_log_dir, exist_ok=True)
@@ -91,8 +92,9 @@ def evaluate(
     log_file.write(f"Task suite: {task_suite_name}\n")
     EP_LEN = get_episode_length(task_suite_name)
 
+    n_tasks = min(max_tasks, num_tasks_in_suite) if max_tasks is not None else num_tasks_in_suite
     total_episodes, total_successes = 0, 0
-    for task_id in range(num_tasks_in_suite):
+    for task_id in range(n_tasks):
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
         env, task_description = get_libero_env(task, resolution=256)
@@ -240,14 +242,20 @@ def parser_args():
                         help="Rademacher perturbation scale.")
     parser.add_argument("--spsa_alpha", type=float, default=0.01,
                         help="SPSA gradient ascent learning rate.")
-    parser.add_argument("--spsa_beta", type=float, default=0.9,
+    parser.add_argument("--spsa_beta", type=float, default=0.7,
                         help="Warm-start decay: L_persistent = beta * L_star.")
+    parser.add_argument("--spsa_max_norm", type=float, default=1.0,
+                        help="L2-norm cap on L to prevent distribution shift.")
     parser.add_argument("--spsa_threshold", type=float, default=0.60,
                         help="Confidence threshold below which SPSA fires.")
     parser.add_argument("--spsa_ep_len", type=int, default=300,
                         help="Episode length for adaptive threshold decay.")
-    parser.add_argument("--ema_decay", type=float, default=0.5,
+    parser.add_argument("--ema_decay", type=float, default=0.3,
                         help="EMA smoothing coefficient for rolling confidence.")
+    parser.add_argument("--num_tasks", type=int, default=None,
+                        help="Max number of tasks to evaluate (default: all tasks in suite).")
+    parser.add_argument("--num_trials", type=int, default=10,
+                        help="Number of trials per task (default: 10).")
 
     args = parser.parse_args()
     return args
@@ -276,6 +284,7 @@ def main():
         spsa_epsilon=args.spsa_epsilon,
         spsa_alpha=args.spsa_alpha,
         spsa_beta=args.spsa_beta,
+        spsa_max_norm=args.spsa_max_norm,
         spsa_threshold=args.spsa_threshold,
         spsa_ep_len=args.spsa_ep_len,
         ema_decay=args.ema_decay,
@@ -286,6 +295,8 @@ def main():
         task_suite_name=args.task_suite_name,
         local_log_dir=eval_log_dir,
         debug=args.debug,
+        num_trials_per_task=args.num_trials,
+        max_tasks=args.num_tasks,
     )
 
     if not args.no_nccl:
