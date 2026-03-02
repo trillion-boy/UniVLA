@@ -231,19 +231,20 @@ class EmuVLAModelSPSA(EmuVLAModel):
 
             def _run_generate(L_vec):
                 """Generate using input_ids path (identical to baseline) with L injected
-                via embed_tokens monkey-patch. Avoids inputs_embeds path which causes
-                Emu3MoE to generate EOA immediately and return empty action tensors."""
-                original_embed = self.model.model.embed_tokens
+                via a forward hook on embed_tokens. Avoids inputs_embeds path which causes
+                Emu3MoE to generate EOA immediately and return empty action tensors.
+                Uses register_forward_hook instead of module replacement to stay compatible
+                with PyTorch's nn.Module attribute restrictions."""
 
-                def patched_embed(ids):
-                    out = original_embed(ids)
+                def _hook_fn(module, input, output):
                     # Add L only to the initial prompt embedding (seq_len positions),
                     # not to the single-token calls during autoregressive generation.
-                    if L_vec is not None and out.shape[1] == seq_len and visual_mask.any():
-                        out[0, visual_mask, :] = out[0, visual_mask, :] + L_vec
-                    return out
+                    if L_vec is not None and output.shape[1] == seq_len and visual_mask.any():
+                        output = output.clone()
+                        output[0, visual_mask, :] = output[0, visual_mask, :] + L_vec
+                    return output
 
-                self.model.model.embed_tokens = patched_embed
+                handle = self.model.model.embed_tokens.register_forward_hook(_hook_fn)
                 try:
                     proc = ActionIDConstraintLogitsProcessor(allowed_token_ids)
                     with torch.no_grad():
@@ -255,7 +256,7 @@ class EmuVLAModelSPSA(EmuVLAModel):
                             attention_mask=base_mask,
                         )
                 finally:
-                    self.model.model.embed_tokens = original_embed
+                    handle.remove()
 
                 conf = float(np.mean(proc.token_confidences)) if proc.token_confidences else 0.0
                 # Same output parsing as baseline no-SPSA path
