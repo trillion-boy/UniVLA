@@ -224,50 +224,51 @@ class EmuVLAModelSPSA(EmuVLAModel):
                 last_token_id - self.action_tokenizer.vocab_size, last_token_id + 1
             )) + [self.eoa_token_id]
 
-            def _run_generate(inputs_embeds=None, input_ids=None, attn_mask=None):
-                """Run one generate() call and return (outputs, chunk_confidence)."""
-                proc = ActionIDConstraintLogitsProcessor(allowed_token_ids)
-                gen_kwargs = dict(
-                    max_new_tokens=80,
-                    logits_processor=[proc],
-                    attention_mask=attn_mask.to(self.device),
-                )
-                with torch.no_grad():
-                    if inputs_embeds is not None:
-                        out = self.model.generate(
-                            inputs_embeds=inputs_embeds,
-                            **{k: v for k, v in {
-                                'pad_token_id': self.GENERATION_CONFIG.pad_token_id,
-                                'bos_token_id': self.GENERATION_CONFIG.bos_token_id,
-                                'eos_token_id': self.GENERATION_CONFIG.eos_token_id,
-                                'do_sample': self.GENERATION_CONFIG.do_sample,
-                            }.items()},
-                            **gen_kwargs,
-                        )
-                    else:
-                        out = self.model.generate(
-                            input_ids.to(self.device),
-                            self.GENERATION_CONFIG,
-                            **gen_kwargs,
-                        )
-                conf = float(np.mean(proc.token_confidences)) if proc.token_confidences else 0.0
-                return out, conf
-
-            # ---------- ControlMLLM-style visual broadcast setup ----------
-            with torch.no_grad():
-                base_embeds = self.model.model.embed_tokens(
-                    final_inputs.input_ids.to(self.device)
-                )  # (1, seq_len, hidden_size)
+            seq_len = final_inputs.input_ids.shape[1]
+            input_ids_dev = final_inputs.input_ids.to(self.device)
             base_mask = final_inputs.attention_mask.to(self.device)
             visual_mask = self._get_visual_mask(final_inputs.input_ids[0].to(self.device))
+
+            def _run_generate(L_vec):
+                """Generate using input_ids path (identical to baseline) with L injected
+                via embed_tokens monkey-patch. Avoids inputs_embeds path which causes
+                Emu3MoE to generate EOA immediately and return empty action tensors."""
+                original_embed = self.model.model.embed_tokens
+
+                def patched_embed(ids):
+                    out = original_embed(ids)
+                    # Add L only to the initial prompt embedding (seq_len positions),
+                    # not to the single-token calls during autoregressive generation.
+                    if L_vec is not None and out.shape[1] == seq_len and visual_mask.any():
+                        out[0, visual_mask, :] = out[0, visual_mask, :] + L_vec
+                    return out
+
+                self.model.model.embed_tokens = patched_embed
+                try:
+                    proc = ActionIDConstraintLogitsProcessor(allowed_token_ids)
+                    with torch.no_grad():
+                        out = self.model.generate(
+                            input_ids_dev,
+                            self.GENERATION_CONFIG,
+                            max_new_tokens=80,
+                            logits_processor=[proc],
+                            attention_mask=base_mask,
+                        )
+                finally:
+                    self.model.model.embed_tokens = original_embed
+
+                conf = float(np.mean(proc.token_confidences)) if proc.token_confidences else 0.0
+                # Same output parsing as baseline no-SPSA path
+                orig_gen = out[:, seq_len:]       # generated tokens (incl. eoa)
+                gen = out[:, seq_len:-1]          # generated tokens (excl. eoa)
+                return gen, orig_gen, conf
 
             # Adaptive threshold: starts at spsa_threshold, decreases by 0.05 at ep_len
             t_ratio = min(current_step / max(self.spsa_ep_len, 1), 1.0)
             adaptive_threshold = self.spsa_threshold - 0.05 * t_ratio
 
             if self.use_spsa and self.rolling_conf < adaptive_threshold:
-                # ------ SPSA: optimize L via visual broadcast ------
-                # Warm-start from previous chunk's optimized L*
+                # ------ SPSA: optimize L via embed_tokens injection ------
                 L = self.L_persistent.clone()
 
                 for _ in range(self.spsa_n):
@@ -276,11 +277,8 @@ class EmuVLAModelSPSA(EmuVLAModel):
                         2 * torch.bernoulli(torch.ones_like(L) * 0.5) - 1
                     ) * self.spsa_epsilon
 
-                    embeds_plus  = self._apply_L(base_embeds, L + delta, visual_mask)
-                    embeds_minus = self._apply_L(base_embeds, L - delta, visual_mask)
-
-                    _, conf_plus  = _run_generate(inputs_embeds=embeds_plus,  attn_mask=base_mask)
-                    _, conf_minus = _run_generate(inputs_embeds=embeds_minus, attn_mask=base_mask)
+                    _, _, conf_plus  = _run_generate(L + delta)
+                    _, _, conf_minus = _run_generate(L - delta)
 
                     # SPSA gradient ascent (maximize confidence)
                     grad = (conf_plus - conf_minus) / (2.0 * self.spsa_epsilon)
@@ -294,21 +292,10 @@ class EmuVLAModelSPSA(EmuVLAModel):
                 # Update persistent L with decay (warm-start for next chunk)
                 self.L_persistent = (self.spsa_beta * L).detach()
 
-                # Final generate with optimized L*
-                embeds_star = self._apply_L(base_embeds, L, visual_mask)
-                outputs, chunk_confidence = _run_generate(
-                    inputs_embeds=embeds_star, attn_mask=base_mask
-                )
+                outputs, orig_outputs, chunk_confidence = _run_generate(L)
             else:
                 # ------ No SPSA: apply persistent L from previous chunk ------
-                embeds_with_L = self._apply_L(base_embeds, self.L_persistent, visual_mask)
-                outputs, chunk_confidence = _run_generate(
-                    inputs_embeds=embeds_with_L, attn_mask=base_mask
-                )
-
-            # inputs_embeds path: generate() returns only new tokens (no input prefix)
-            orig_outputs = outputs
-            outputs = outputs[:, :-1]  # remove eoa token
+                outputs, orig_outputs, chunk_confidence = _run_generate(self.L_persistent)
 
             # Update rolling confidence (EMA)
             self.rolling_conf = (
