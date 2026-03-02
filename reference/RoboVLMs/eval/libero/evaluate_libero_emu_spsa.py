@@ -28,6 +28,15 @@ from pytorch_lightning import seed_everything
 import torch
 import torch.distributed as dist
 
+# PyTorch 2.6+ compatibility: LIBERO init_states contain numpy objects which
+# are blocked by the new weights_only=True default. Patch torch.load globally
+# so LIBERO's benchmark/__init__.py can load init state files without error.
+_orig_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    kwargs.setdefault('weights_only', False)
+    return _orig_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
 from model_wrapper_emu_spsa import EmuVLAModelSPSA
 from libero_utils import save_rollout_gif, get_libero_image, get_episode_length, get_libero_wrist_image, quat2axisangle
 from libero_utils import get_libero_dummy_action, get_libero_env
