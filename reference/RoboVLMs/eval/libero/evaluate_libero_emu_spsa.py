@@ -83,6 +83,7 @@ def evaluate(
     local_log_dir=None,
     task_suite_name="libero_object",
     max_tasks=None,
+    task_ids=None,
 ):
     run_id = f"{task_suite_name}-{time.strftime('%Y-%m-%d_%H:%M')}"
     os.makedirs(local_log_dir, exist_ok=True)
@@ -101,9 +102,13 @@ def evaluate(
     log_file.write(f"Task suite: {task_suite_name}\n")
     EP_LEN = get_episode_length(task_suite_name)
 
-    n_tasks = min(max_tasks, num_tasks_in_suite) if max_tasks is not None else num_tasks_in_suite
+    if task_ids is not None:
+        task_id_list = [tid for tid in task_ids if tid < num_tasks_in_suite]
+    else:
+        n_tasks = min(max_tasks, num_tasks_in_suite) if max_tasks is not None else num_tasks_in_suite
+        task_id_list = list(range(n_tasks))
     total_episodes, total_successes = 0, 0
-    for task_id in range(n_tasks):
+    for task_id in task_id_list:
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
         env, task_description = get_libero_env(task, resolution=256)
@@ -263,6 +268,8 @@ def parser_args():
                         help="EMA smoothing coefficient for rolling confidence.")
     parser.add_argument("--num_tasks", type=int, default=None,
                         help="Max number of tasks to evaluate (default: all tasks in suite).")
+    parser.add_argument("--task_ids", type=int, nargs="+", default=None,
+                        help="Specific task IDs to evaluate (e.g. --task_ids 6 7). Overrides --num_tasks.")
     parser.add_argument("--num_trials", type=int, default=10,
                         help="Number of trials per task (default: 10).")
 
@@ -306,6 +313,7 @@ def main():
         debug=args.debug,
         num_trials_per_task=args.num_trials,
         max_tasks=args.num_tasks,
+        task_ids=args.task_ids,
     )
 
     if not args.no_nccl:
