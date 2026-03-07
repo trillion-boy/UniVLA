@@ -142,12 +142,13 @@ class EmuVLAInference(CustomModel):
         self.processor = Emu3Processor(self.image_processor, self.image_tokenizer, self.tokenizer)
 
         # fast tokenization
+        _fast_root = os.environ.get("UNIVLA_FAST_ROOT", "/content/pretrain/UniVLA")
         if self.policy_setup == "widowx_bridge":
-            fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast_bridge_t5_s50"
+            fast_path = os.path.join(_fast_root, "fast_bridge_t5_s50")
         elif self.policy_setup == "google_robot":
-            fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast_google_a5_s50"
+            fast_path = os.path.join(_fast_root, "fast_google_a5_s50")
         else:
-            fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast"
+            fast_path = os.path.join(_fast_root, "fast")
         self.action_tokenizer = AutoProcessor.from_pretrained(fast_path, trust_remote_code=True)
 
         self.rgb_list = []
@@ -183,6 +184,7 @@ class EmuVLAInference(CustomModel):
         self.hand_rgb_list = []
         self.rollout_step_counter = 0
         self.action_hist_list = []
+        self.last_confidence = 0.0
 
         self.sticky_action_is_on = False
         self.gripper_action_repeat = 0
@@ -318,13 +320,27 @@ class EmuVLAInference(CustomModel):
                 final_inputs.input_ids = torch.cat([cot_outputs, torch.tensor([[boa]], device=cot_outputs.device)], dim=1)
                 final_inputs.attention_mask = torch.ones_like(final_inputs.input_ids)
             with torch.no_grad():
-                outputs = self.model.generate(
+                gen_output = self.model.generate(
                     final_inputs.input_ids.to(self.device),
                     self.GENERATION_CONFIG,
                     max_new_tokens=100,
                     logits_processor=[action_id_processor],
                     attention_mask=final_inputs.attention_mask.to(self.device),
+                    output_scores=True,
+                    return_dict_in_generate=True,
                 )
+            outputs = gen_output.sequences
+            # compute per-token confidence and store as mean
+            if gen_output.scores:
+                token_confs = []
+                input_len = final_inputs.input_ids.shape[-1]
+                for i, score in enumerate(gen_output.scores):
+                    probs = torch.softmax(score.float(), dim=-1)
+                    chosen = outputs[:, input_len + i]
+                    token_confs.append(probs[0, chosen[0]].item())
+                self.last_confidence = float(np.mean(token_confs))
+            else:
+                self.last_confidence = 0.0
             # omit the eoa token
             orig_outputs = outputs[:, final_inputs.input_ids.shape[-1]:]
             outputs = outputs[:, final_inputs.input_ids.shape[-1]:-1]

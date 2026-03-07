@@ -6,6 +6,7 @@ import os
 
 import numpy as np
 from transforms3d.euler import quat2euler
+from PIL import Image as PILImage, ImageDraw, ImageFont
 
 from simpler_env.utils.env.env_builder import (
     build_maniskill2_env,
@@ -108,11 +109,21 @@ def run_maniskill2_eval_single_episode(
     timestep = 0
     success = "failure"
 
+    confidences = []
+
+    def _overlay_confidence(img, conf):
+        pil_img = PILImage.fromarray(img)
+        draw = ImageDraw.Draw(pil_img)
+        text = f"conf: {conf:.3f}"
+        draw.rectangle([2, 2, 120, 16], fill=(0, 0, 0))
+        draw.text((4, 3), text, fill=(255, 255, 0))
+        return np.array(pil_img)
+
     # Step the environment
     while not (predicted_terminated or truncated):
         # step the model; "raw_action" is raw model action output; "action" is the processed action to be sent into maniskill env
-        # import pdb; pdb.set_trace()
         raw_action, action = model.step(image, task_description)
+        step_confidence = getattr(model, 'last_confidence', 0.0)
 
         # action chunk
         raw_action_list = raw_action
@@ -121,7 +132,7 @@ def run_maniskill2_eval_single_episode(
         for raw_action, action in zip(raw_action_list, action_list):
             predicted_actions.append(raw_action)
             predicted_terminated = bool(action["terminate_episode"][0] > 0)
-    
+
             if predicted_terminated:
                 if not is_final_subtask:
                     # advance the environment to the next subtask
@@ -147,15 +158,11 @@ def run_maniskill2_eval_single_episode(
             if not is_final_subtask and info["episode_stats"].get("is_drawer_open", False):
                 env.advance_to_next_subtask()
 
-            # print(timestep, done, truncated, info)
-
             image = get_image_from_maniskill2_obs_dict(
                 env, obs, camera_name=obs_camera_name
             )
-            # from PIL import Image
-            # Image.fromarray(image).save('test.jpg')
-            # import pdb; pdb.set_trace()
-            images.append(image)
+            confidences.append(step_confidence)
+            images.append(_overlay_confidence(image, step_confidence))
             timestep += 1
         # if is_final_subtask and success == "success":
         #     break
@@ -185,6 +192,20 @@ def run_maniskill2_eval_single_episode(
     video_path = f"{ckpt_path_basename}/{scene_name}/{control_mode}/{env_save_name}/rob_{robot_init_x}_{robot_init_y}_rot_{r:.3f}_{p:.3f}_{y:.3f}_rgb_overlay_{rgb_overlay_path_str}/{video_name}"
     video_path = os.path.join(logging_dir, video_path)
     write_video(video_path, images, fps=5)
+
+    # save GIF
+    gif_path = video_path.replace(".mp4", ".gif")
+    os.makedirs(os.path.dirname(gif_path), exist_ok=True)
+    pil_frames = [PILImage.fromarray(img) for img in images]
+    pil_frames[0].save(
+        gif_path,
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=200,
+        loop=0,
+        optimize=False,
+    )
+    print(f"[GIF] mean_conf={np.mean(confidences):.3f}  saved → {gif_path}")
 
     # save action trajectory
     # action_path = video_path.replace(".mp4", ".png")
