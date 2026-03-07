@@ -28,6 +28,7 @@ class ActionIDConstraintLogitsProcessor(LogitsProcessor):
         :param allowed_token_ids: 允许的token ID列表
         """
         self.allowed_token_ids = allowed_token_ids
+        self.token_confidences = []  # per-token max prob after masking (action-only softmax)
 
     def __call__(self, input_ids, scores):
         # 创建掩码：允许的token位置为True，其他为False
@@ -36,9 +37,14 @@ class ActionIDConstraintLogitsProcessor(LogitsProcessor):
             mask[self.allowed_token_ids] = True
         else:
             mask[:, self.allowed_token_ids] = True
-        
+
         # 将不允许的token概率设为负无穷
         scores[~mask] = -float("inf")
+
+        # softmax over action tokens only → max prob = confidence for this token
+        probs = torch.softmax(scores, dim=-1)
+        self.token_confidences.append(probs.max(dim=-1).values.item())
+
         return scores
 
 class EmuVLAInference(CustomModel):
@@ -329,15 +335,9 @@ class EmuVLAInference(CustomModel):
                     return_dict_in_generate=True,
                 )
             outputs = gen_output.sequences
-            # compute per-token confidence and store as mean
-            if gen_output.scores:
-                token_confs = []
-                input_len = final_inputs.input_ids.shape[-1]
-                for i, score in enumerate(gen_output.scores):
-                    probs = torch.softmax(score.float(), dim=-1)
-                    chosen = outputs[:, input_len + i]
-                    token_confs.append(probs[0, chosen[0]].item())
-                self.last_confidence = float(np.mean(token_confs))
+            # confidence = mean of per-token max-prob over action tokens only (action-constrained softmax)
+            if action_id_processor.token_confidences:
+                self.last_confidence = float(np.mean(action_id_processor.token_confidences))
             else:
                 self.last_confidence = 0.0
             # omit the eoa token
