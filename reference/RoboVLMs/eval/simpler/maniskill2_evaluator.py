@@ -177,12 +177,22 @@ def run_maniskill2_eval_single_episode(
 
     ckpt_path_basename = f"{model_name}"
 
+    _stat_abbrev = {
+        "moved_correct_obj": "mc",
+        "moved_wrong_obj": "mw",
+        "is_src_obj_grasped": "gr",
+        "consecutive_grasp": "cg",
+        "src_on_target": "ot",
+    }
+
     if obj_variation_mode == "xy":
         video_name = f"{success}_obj_{obj_init_x}_{obj_init_y}"
     elif obj_variation_mode == "episode":
-        video_name = f"{success}_obj_episode_{obj_episode_id}"
+        video_name = f"{success}_ep{obj_episode_id}"
     for k, v in episode_stats.items():
-        video_name = video_name + f"_{k}_{v}"
+        key = _stat_abbrev.get(k, k)
+        val = "T" if v is True else ("F" if v is False else v)
+        video_name = video_name + f"_{key}-{val}"
     video_name = video_name + ".mp4"
     if rgb_overlay_path is not None:
         rgb_overlay_path_str = os.path.splitext(os.path.basename(rgb_overlay_path))[0]
