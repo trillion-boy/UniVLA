@@ -7,6 +7,7 @@ ROBOVLMS_ROOT="$(dirname "$SCRIPT_DIR")"
 UNIVLA_ROOT=${UNIVLA_ROOT:-$(dirname "$ROBOVLMS_ROOT")/..}
 UNIVLA_ROOT="$(cd "$UNIVLA_ROOT" && pwd)"
 export PYTHONPATH="${ROBOVLMS_ROOT}:${UNIVLA_ROOT}:${PYTHONPATH}"
+export PYTHONUNBUFFERED=1
 
 scene_name=bridge_table_1_v1
 robot=widowx
@@ -18,7 +19,7 @@ ckpt_dir=$1
 vq_hub=${VQ_HUB:-/content/pretrain/Emu3-Stage1}
 vision_hub=${VISION_HUB:-/content/pretrain/Emu3-VisionTokenizer}
 
-python eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
+python -u eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
   --vq_hub ${vq_hub} --vision_hub ${vision_hub} \
   --robot ${robot} --policy-setup widowx_bridge \
   --control-freq 5 --sim-freq 500 --max-episode-steps 60 \
@@ -27,7 +28,7 @@ python eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_h
   --robot-init-x ${robot_init_x} ${robot_init_x} 1 --robot-init-y ${robot_init_y} ${robot_init_y} 1 --obj-variation-mode episode --obj-episode-range 0 24 \
   --robot-init-rot-quat-center 0 0 0 1 --robot-init-rot-rpy-range 0 0 1 0 0 1 0 0 1;
 
-python eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
+python -u eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
   --vq_hub ${vq_hub} --vision_hub ${vision_hub} \
   --robot ${robot} --policy-setup widowx_bridge \
   --control-freq 5 --sim-freq 500 --max-episode-steps 60 \
@@ -36,7 +37,7 @@ python eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_h
   --robot-init-x ${robot_init_x} ${robot_init_x} 1 --robot-init-y ${robot_init_y} ${robot_init_y} 1 --obj-variation-mode episode --obj-episode-range 0 24 \
   --robot-init-rot-quat-center 0 0 0 1 --robot-init-rot-rpy-range 0 0 1 0 0 1 0 0 1;
 
-python eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
+python -u eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
   --vq_hub ${vq_hub} --vision_hub ${vision_hub} \
   --robot ${robot} --policy-setup widowx_bridge \
   --control-freq 5 --sim-freq 500 --max-episode-steps 60 \
@@ -51,7 +52,7 @@ rgb_overlay_path=real_inpainting/bridge_sink.png
 robot_init_x=0.127
 robot_init_y=0.06
 
-python eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
+python -u eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
   --vq_hub ${vq_hub} --vision_hub ${vision_hub} \
   --robot ${robot} --policy-setup widowx_bridge \
   --control-freq 5 --sim-freq 500 --max-episode-steps 120 \
