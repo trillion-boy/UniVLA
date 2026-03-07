@@ -4,7 +4,9 @@ policy_model=openvla
 # ensure eval/ package is importable regardless of how this script is invoked
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROBOVLMS_ROOT="$(dirname "$SCRIPT_DIR")"
-export PYTHONPATH="${ROBOVLMS_ROOT}:${PYTHONPATH}"
+UNIVLA_ROOT=${UNIVLA_ROOT:-$(dirname "$ROBOVLMS_ROOT")/..}
+UNIVLA_ROOT="$(cd "$UNIVLA_ROOT" && pwd)"
+export PYTHONPATH="${ROBOVLMS_ROOT}:${UNIVLA_ROOT}:${PYTHONPATH}"
 
 scene_name=bridge_table_1_v1
 robot=widowx
