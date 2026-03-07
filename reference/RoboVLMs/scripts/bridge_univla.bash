@@ -1,6 +1,11 @@
 # shader_dir=rt means that we turn on ray-tracing rendering; this is quite crucial for the open / close drawer task as policies often rely on shadows to infer depth
 policy_model=openvla
 
+# ensure eval/ package is importable regardless of how this script is invoked
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROBOVLMS_ROOT="$(dirname "$SCRIPT_DIR")"
+export PYTHONPATH="${ROBOVLMS_ROOT}:${PYTHONPATH}"
+
 scene_name=bridge_table_1_v1
 robot=widowx
 rgb_overlay_path=real_inpainting/bridge_real_eval_1.png
