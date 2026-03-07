@@ -8,7 +8,6 @@ import cv2 as cv
 import json
 from transforms3d.euler import euler2axangle
 
-from robovlms.train.base_trainer import BaseTrainer
 from eval.calvin.model_wrapper import CustomModel
 from queue import Queue
 from PIL import Image
@@ -508,6 +507,7 @@ class BaseModelInference(CustomModel):
         policy_setup: str = "widowx_bridge",
         exec_horizon=1,
     ):
+        from robovlms.train.base_trainer import BaseTrainer
         self.configs = configs
         self.dataset_stat = self.load_dataset_stat()
         self.model = BaseTrainer(configs=configs)
