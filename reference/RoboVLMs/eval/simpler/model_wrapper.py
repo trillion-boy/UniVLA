@@ -17,7 +17,7 @@ from transformers import AutoModel, AutoImageProcessor, GenerationConfig, AutoPr
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation import LogitsProcessorList, PrefixConstrainedLogitsProcessor, UnbatchedClassifierFreeGuidanceLogitsProcessor
 import sys
-sys.path.append("/share/project/yuqi.wang/UniVLA/reference/Emu3")
+sys.path.append(os.environ.get("EMU3_ROOT", "/content/UniVLA/reference/Emu3"))
 from emu3.mllm import Emu3Tokenizer, Emu3ForCausalLM, Emu3Processor
 from emu3.mllm import Emu3MoE
 from transformers import LogitsProcessor
