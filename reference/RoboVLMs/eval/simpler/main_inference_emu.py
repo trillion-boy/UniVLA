@@ -1,4 +1,8 @@
 import os
+
+# Suppress svulkan2/GLFW display errors before any sapien/svulkan2 import
+os.environ.setdefault("SVULKAN2_LOG_LEVEL", "off")
+
 import torch
 import numpy as np
 import tensorflow as tf

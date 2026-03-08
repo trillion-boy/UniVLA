@@ -215,7 +215,8 @@ def run_maniskill2_eval_single_episode(
         loop=0,
         optimize=False,
     )
-    print(f"[GIF] mean_conf={np.mean(confidences):.3f}  saved → {gif_path}")
+    confs = np.array(confidences)
+    print(f"[GIF] mean_conf={np.mean(confs):.3f}  min_conf={np.min(confs):.3f}  max_conf={np.max(confs):.3f}  saved → {gif_path}")
 
     # save action trajectory
     # action_path = video_path.replace(".mp4", ".png")
