@@ -63,7 +63,7 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
         # SPSA on/off
         use_spsa=True,
         # SPSA hyperparams
-        spsa_n=20,
+        spsa_n=10,
         spsa_epsilon=0.05,
         spsa_alpha=0.01,
         # warm-start decay: L_persistent = beta * L_star
