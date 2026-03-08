@@ -11,6 +11,7 @@ from simpler_env.evaluation.argparse import get_args
 from eval.simpler.env_utlis import DictAction
 from eval.simpler.maniskill2_evaluator import maniskill2_evaluator
 from eval.simpler.model_wrapper import BaseModelInference, EmuVLAInference
+from eval.simpler.model_wrapper_emu_spsa_v2 import EmuVLAInferenceSPSA_v2
 
 import argparse
 import numpy as np
@@ -153,6 +154,21 @@ def get_args():
     parser.add_argument("--no_cache", action="store_true")
     parser.add_argument("--double-step", action="store_true")
     parser.add_argument("--CACHE_ROOT", type=str, default="/share/project/yuqi.wang/UniVLA/logs/Simpler")
+
+    # SPSA-v2 flags
+    parser.add_argument("--use-spsa-v2", action="store_true",
+                        help="Enable SPSA-v2: task-emb warm-init + cosine-weighted injection")
+    parser.add_argument("--spsa-n",          type=int,   default=20)
+    parser.add_argument("--spsa-epsilon",    type=float, default=0.05)
+    parser.add_argument("--spsa-alpha",      type=float, default=0.01)
+    parser.add_argument("--spsa-beta",       type=float, default=0.7)
+    parser.add_argument("--spsa-max-norm",   type=float, default=1.0)
+    parser.add_argument("--spsa-threshold",  type=float, default=0.40)
+    parser.add_argument("--task-emb-scale",  type=float, default=0.01)
+    parser.add_argument("--cosine-temp",     type=float, default=0.1)
+    parser.add_argument("--debug-weight-every", type=int, default=0,
+                        help="Print cosine weight stats every N steps (0=off)")
+
     args = parser.parse_args()
 
     # env args: robot pose
@@ -213,13 +229,33 @@ if __name__ == "__main__":
             [tf.config.LogicalDeviceConfiguration(memory_limit=args.tf_memory_limit)],
         )
 
-    model = EmuVLAInference(
-        emu_hub=args.emu_hub,
-        vq_hub=args.vq_hub,
-        vision_hub=args.vision_hub,
-        device=torch.device("cuda"),
-        policy_setup=policy_setup,
-    )
+    if args.use_spsa_v2:
+        args.model_name += "_spsa_v2"
+        model = EmuVLAInferenceSPSA_v2(
+            emu_hub=args.emu_hub,
+            vq_hub=args.vq_hub,
+            vision_hub=args.vision_hub,
+            device=torch.device("cuda"),
+            policy_setup=policy_setup,
+            use_spsa=True,
+            spsa_n=args.spsa_n,
+            spsa_epsilon=args.spsa_epsilon,
+            spsa_alpha=args.spsa_alpha,
+            spsa_beta=args.spsa_beta,
+            spsa_max_norm=args.spsa_max_norm,
+            spsa_threshold=args.spsa_threshold,
+            task_emb_scale=args.task_emb_scale,
+            cosine_temp=args.cosine_temp,
+            debug_weight_every=args.debug_weight_every,
+        )
+    else:
+        model = EmuVLAInference(
+            emu_hub=args.emu_hub,
+            vq_hub=args.vq_hub,
+            vision_hub=args.vision_hub,
+            device=torch.device("cuda"),
+            policy_setup=policy_setup,
+        )
     
     # run real-to-sim evaluation
     success_arr = maniskill2_evaluator(model, args)
