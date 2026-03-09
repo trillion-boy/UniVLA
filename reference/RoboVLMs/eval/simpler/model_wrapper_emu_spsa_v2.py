@@ -399,11 +399,14 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
                 if L_norm > self.spsa_max_norm:
                     L = L * self.spsa_max_norm / L_norm
 
-            # Warm-start for next chunk
-            self.L_persistent = (self.spsa_beta * L).detach()
             self._spsa_ever_ran = True
 
             outputs, orig_outputs, chunk_score, chunk_confidence = _run_generate(L)
+
+            # Warm-start for next chunk: quality-gate by combined_score
+            # High score → preserve L more; Low score → trust less
+            quality_gate = min(chunk_score / max(self.spsa_threshold, 1e-6), 1.0)
+            self.L_persistent = (self.spsa_beta * L * quality_gate).detach()
         else:
             # Apply persistent L from previous chunk (with cosine weighting)
             outputs, orig_outputs, chunk_score, chunk_confidence = _run_generate(self.L_persistent)
