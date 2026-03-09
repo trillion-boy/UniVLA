@@ -147,6 +147,9 @@ def run_maniskill2_eval_single_episode(
             )
 
             success = "success" if done else "failure"
+            if done:
+                predicted_terminated = True
+                break
             new_task_description = env.get_language_instruction()
             if new_task_description != task_description:
                 task_description = new_task_description
@@ -164,8 +167,6 @@ def run_maniskill2_eval_single_episode(
             confidences.append(step_confidence)
             images.append(_overlay_confidence(image, step_confidence))
             timestep += 1
-        # if is_final_subtask and success == "success":
-        #     break
     episode_stats = info.get("episode_stats", {})
 
     # save video
