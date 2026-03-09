@@ -60,23 +60,23 @@ echo "  spsa_n:         ${SPSA_N}"
 echo "  task_emb_scale: ${TASK_EMB_SCALE}"
 echo "======================"
 
-# ---- Task 1: PutCarrot ---- (DONE: 66.7%, skipping)
+# ---- Task 1: PutCarrot ----
 scene_name=bridge_table_1_v1
 robot=widowx
 rgb_overlay_path=real_inpainting/bridge_real_eval_1.png
 robot_init_x=0.147
 robot_init_y=0.028
 
-# python -u eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
-#   --vq_hub ${vq_hub} --vision_hub ${vision_hub} \
-#   --robot ${robot} --policy-setup widowx_bridge \
-#   --control-freq 5 --sim-freq 500 --max-episode-steps 60 \
-#   --env-name PutCarrotOnPlateInScene-v0 --scene-name ${scene_name} \
-#   --rgb-overlay-path ${rgb_overlay_path} \
-#   --robot-init-x ${robot_init_x} ${robot_init_x} 1 --robot-init-y ${robot_init_y} ${robot_init_y} 1 \
-#   --obj-variation-mode episode --obj-episode-range 0 24 \
-#   --robot-init-rot-quat-center 0 0 0 1 --robot-init-rot-rpy-range 0 0 1 0 0 1 0 0 1 \
-#   ${SPSA_ARGS};
+python -u eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
+  --vq_hub ${vq_hub} --vision_hub ${vision_hub} \
+  --robot ${robot} --policy-setup widowx_bridge \
+  --control-freq 5 --sim-freq 500 --max-episode-steps 60 \
+  --env-name PutCarrotOnPlateInScene-v0 --scene-name ${scene_name} \
+  --rgb-overlay-path ${rgb_overlay_path} \
+  --robot-init-x ${robot_init_x} ${robot_init_x} 1 --robot-init-y ${robot_init_y} ${robot_init_y} 1 \
+  --obj-variation-mode episode --obj-episode-range 0 24 \
+  --robot-init-rot-quat-center 0 0 0 1 --robot-init-rot-rpy-range 0 0 1 0 0 1 0 0 1 \
+  ${SPSA_ARGS};
 
 # ---- Task 2: StackCube ----
 python -u eval/simpler/main_inference_emu.py --policy-model ${policy_model} --emu_hub $ckpt_dir \
