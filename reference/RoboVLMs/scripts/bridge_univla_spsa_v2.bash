@@ -32,7 +32,7 @@ vq_hub=${VQ_HUB:-/content/pretrain/Emu3-Stage1}
 vision_hub=${VISION_HUB:-/content/pretrain/Emu3-VisionTokenizer}
 
 # SPSA-v2 hyperparams (override via positional args or env vars)
-SPSA_THRESHOLD=${2:-${SPSA_THRESHOLD:-0.40}}
+SPSA_THRESHOLD=${2:-${SPSA_THRESHOLD:-0.80}}
 COSINE_TEMP=${3:-${COSINE_TEMP:-0.1}}
 SPSA_N=${4:-${SPSA_N:-10}}
 SPSA_EPSILON=${SPSA_EPSILON:-0.05}

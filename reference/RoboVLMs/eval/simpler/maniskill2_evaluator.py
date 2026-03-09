@@ -129,6 +129,7 @@ def run_maniskill2_eval_single_episode(
         combined_score = getattr(model, 'last_combined_score', None)
         rolling_score  = getattr(model, 'rolling_score', None)
         spsa_threshold = getattr(model, 'spsa_threshold', None)
+        L_norm         = getattr(model, 'last_L_norm', None)
         use_spsa = getattr(model, 'use_spsa', False)
         spsa_fired = use_spsa and rolling_score is not None and spsa_threshold is not None and rolling_score < spsa_threshold
         if spsa_fired:
@@ -137,7 +138,8 @@ def run_maniskill2_eval_single_episode(
             rolling_str = f"  rolling_score={rolling_score:.3f}" if rolling_score is not None else ""
             score_str   = f"  score={combined_score:.3f}" if combined_score is not None else ""
             spsa_str    = f"  SPSA={'ON' if spsa_fired else 'off'}" if use_spsa else ""
-            print(f"  [step {timestep:3d}] conf={step_confidence:.3f}{score_str}{rolling_str}{spsa_str}")
+            L_str       = f"  L_norm={L_norm:.4f}" if L_norm is not None else ""
+            print(f"  [step {timestep:3d}] conf={step_confidence:.3f}{score_str}{rolling_str}{spsa_str}{L_str}")
 
         # action chunk
         raw_action_list = raw_action

@@ -113,6 +113,7 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
             and hasattr(self.model.model, 'layers')
             and len(self.model.model.layers) > 0
         )
+        self.last_L_norm = 0.0
 
     # ------------------------------------------------------------------
     # Reset: called at episode start
@@ -125,6 +126,7 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
         self.rolling_score = 1.0
         self.last_combined_score = 0.0
         self.last_confidence = 0.0
+        self.last_L_norm = 0.0
         self._spsa_ever_ran = False
         self._step_count = 0
 
@@ -407,9 +409,11 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
             # High score → preserve L more; Low score → trust less
             quality_gate = min(chunk_score / max(self.spsa_threshold, 1e-6), 1.0)
             self.L_persistent = (self.spsa_beta * L * quality_gate).detach()
+            self.last_L_norm = float(L.norm().item())
         else:
             # Apply persistent L from previous chunk (with cosine weighting)
             outputs, orig_outputs, chunk_score, chunk_confidence = _run_generate(self.L_persistent)
+            self.last_L_norm = float(self.L_persistent.norm().item())
 
         # EMA update on rolling_score (used for SPSA trigger)
         self.rolling_score = (
