@@ -78,6 +78,9 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
         task_emb_scale=0.01,
         # [v2] cosine weight temperature (lower = more peaked)
         cosine_temp=0.1,
+        # [v3] SPSA objective weights: score = alpha*visual_grounding + beta*task_alignment
+        score_alpha=0.5,
+        score_beta=0.5,
         # [v2] debug: print weight stats once per N steps
         debug_weight_every=0,   # 0 = disabled
     ):
@@ -93,13 +96,22 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
         self.ema_decay = ema_decay
         self.task_emb_scale = task_emb_scale
         self.cosine_temp = cosine_temp
+        self.score_alpha = score_alpha
+        self.score_beta = score_beta
         self.debug_weight_every = debug_weight_every
 
         hidden_size = self.model.model.embed_tokens.weight.shape[1]
         self.L_persistent = torch.zeros(hidden_size, dtype=torch.bfloat16, device=self.device)
         self.rolling_conf = 1.0   # start optimistic → SPSA won't fire immediately
+        self.last_combined_score = 0.0
         self._spsa_ever_ran = False
         self._step_count = 0
+        # Check if last-layer hook is possible (LLaMA-style architecture)
+        self._has_layers = (
+            hasattr(self.model, 'model')
+            and hasattr(self.model.model, 'layers')
+            and len(self.model.model.layers) > 0
+        )
 
     # ------------------------------------------------------------------
     # Reset: called at episode start
@@ -110,6 +122,7 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
         hidden_size = self.model.model.embed_tokens.weight.shape[1]
         self.L_persistent = torch.zeros(hidden_size, dtype=torch.bfloat16, device=self.device)
         self.rolling_conf = 1.0
+        self.last_combined_score = 0.0
         self._spsa_ever_ran = False
         self._step_count = 0
 
@@ -241,12 +254,24 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
             """
             Generate with [v2] cosine-weighted L injection via forward hook.
 
-            Hook fires only on the initial prompt pass (seq_len positions).
-            Each visual position i receives L_vec * weight_i where:
-                weight_i = softmax(cos(vis_i, task_emb) / T) * N_vis
-            → mean weight = 1, so average energy matches uniform injection.
+            Returns: (gen, orig_gen, combined_score, raw_conf)
+              combined_score = score_alpha * visual_grounding_norm
+                             + score_beta  * task_alignment_norm
+              raw_conf       = mean max-prob over action tokens (original conf)
+
+            visual_grounding: cosine similarity between each generated action token's
+              last-layer hidden state and the visual token hidden states from the
+              same layer during the prompt pass. High = model attends to scene.
+            task_alignment: cosine similarity between action hidden state and
+              task embedding. High = action is grounded in task instruction.
             """
-            def _hook_fn(module, input, output):
+            # ---- buffers for scoring ----
+            _vis_hidden_ref = [None]   # visual token hidden states from prompt pass
+            _task_align_buf = []
+            _vis_ground_buf = []
+
+            def _hook_embed(module, input, output):
+                """Inject L into visual token embeddings (prompt pass only)."""
                 if (
                     L_vec is not None
                     and output.shape[1] == seq_len
@@ -255,7 +280,6 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
                     output = output.clone()
                     vis_embs = output[0, visual_mask, :]       # (N_vis, H) bf16
 
-                    # [v2] cosine weights — computed from base embeddings (before adding L)
                     weights = self._cosine_weights(
                         vis_embs.float(), task_emb_f32
                     )  # (N_vis,) float32, mean=1
@@ -271,13 +295,47 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
                             f"std={w.std():.3f} top5={w.topk(5).values.tolist()}"
                         )
 
-                    # Weighted injection: vis_emb_i += L * weight_i
                     w_bf16 = weights.to(L_vec.dtype).unsqueeze(1)  # (N_vis, 1)
                     output[0, visual_mask, :] = vis_embs + L_vec * w_bf16
 
                 return output
 
-            handle = self.model.model.embed_tokens.register_forward_hook(_hook_fn)
+            def _hook_last_layer(module, inp, output):
+                """
+                Capture last-layer hidden states for grounding/alignment scoring.
+                - Prompt pass  (cur_len == seq_len): save visual token hiddens as ref.
+                - Action steps (cur_len  > seq_len): compute task_align + vis_ground.
+                """
+                hidden = output[0]           # (1, cur_len, H)
+                cur_len = hidden.shape[1]
+
+                if cur_len == seq_len:
+                    # Prompt pass — save visual token hidden states
+                    if N_vis > 0:
+                        _vis_hidden_ref[0] = hidden[0, visual_mask, :].detach().float()
+                else:
+                    # Action generation step
+                    last_h = hidden[0, -1, :].float()   # (H,)
+
+                    # Task-action alignment
+                    t_align = F.cosine_similarity(
+                        last_h.unsqueeze(0), task_emb_f32.unsqueeze(0)
+                    ).item()
+                    _task_align_buf.append(t_align)
+
+                    # Visual grounding: sim(action_hidden, visual_hiddens from last layer)
+                    if _vis_hidden_ref[0] is not None:
+                        vis_h = _vis_hidden_ref[0]          # (N_vis, H)
+                        lh_n  = F.normalize(last_h.unsqueeze(0), dim=1)   # (1, H)
+                        vn    = F.normalize(vis_h, dim=1)                  # (N_vis, H)
+                        g = (lh_n @ vn.T).mean().item()    # scalar in [-1, 1]
+                        _vis_ground_buf.append(g)
+
+            handle_embed = self.model.model.embed_tokens.register_forward_hook(_hook_embed)
+            handle_last  = (
+                self.model.model.layers[-1].register_forward_hook(_hook_last_layer)
+                if self._has_layers else None
+            )
             try:
                 proc = ActionIDConstraintLogitsProcessor(allowed_token_ids)
                 with torch.no_grad():
@@ -289,12 +347,27 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
                         attention_mask=base_mask,
                     )
             finally:
-                handle.remove()
+                handle_embed.remove()
+                if handle_last is not None:
+                    handle_last.remove()
 
-            conf     = float(np.mean(proc.token_confidences)) if proc.token_confidences else 0.0
+            raw_conf = float(np.mean(proc.token_confidences)) if proc.token_confidences else 0.0
             orig_gen = out[:, seq_len:]
             gen      = out[:, seq_len:-1]
-            return gen, orig_gen, conf
+
+            # ---- compute combined score ----
+            if _task_align_buf and _vis_ground_buf:
+                task_align_n = (float(np.mean(_task_align_buf)) + 1) / 2   # [-1,1] → [0,1]
+                vis_ground_n = (float(np.mean(_vis_ground_buf)) + 1) / 2
+                combined_score = (
+                    self.score_alpha * vis_ground_n
+                    + self.score_beta  * task_align_n
+                )
+            else:
+                # Fallback: architecture doesn't expose layers, use raw conf
+                combined_score = raw_conf
+
+            return gen, orig_gen, combined_score, raw_conf
 
         # ---------- SPSA or warm-start apply ----------
         if self.use_spsa and self.rolling_conf < self.spsa_threshold:
@@ -312,11 +385,11 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
                 # Rademacher ±ε perturbation
                 delta = (2 * torch.bernoulli(torch.ones_like(L) * 0.5) - 1) * self.spsa_epsilon
 
-                _, _, conf_plus  = _run_generate(L + delta)
-                _, _, conf_minus = _run_generate(L - delta)
+                _, _, score_plus,  _ = _run_generate(L + delta)
+                _, _, score_minus, _ = _run_generate(L - delta)
 
-                # SPSA gradient ascent (maximize confidence)
-                grad = (conf_plus - conf_minus) / (2.0 * self.spsa_epsilon)
+                # SPSA gradient ascent (maximize combined_score)
+                grad = (score_plus - score_minus) / (2.0 * self.spsa_epsilon)
                 L = L + self.spsa_alpha * grad * delta / (delta ** 2 + 1e-8)
 
                 # L2-norm clipping
@@ -328,17 +401,18 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
             self.L_persistent = (self.spsa_beta * L).detach()
             self._spsa_ever_ran = True
 
-            outputs, orig_outputs, chunk_confidence = _run_generate(L)
+            outputs, orig_outputs, chunk_score, chunk_confidence = _run_generate(L)
         else:
             # Apply persistent L from previous chunk (with cosine weighting)
-            outputs, orig_outputs, chunk_confidence = _run_generate(self.L_persistent)
+            outputs, orig_outputs, chunk_score, chunk_confidence = _run_generate(self.L_persistent)
 
-        # EMA update on rolling confidence
+        # EMA update on rolling confidence (raw conf, used for SPSA trigger threshold)
         self.rolling_conf = (
             self.ema_decay * self.rolling_conf
             + (1 - self.ema_decay) * chunk_confidence
         )
         self.last_confidence = chunk_confidence
+        self.last_combined_score = chunk_score
 
         # ---------- Decode action (identical to parent) ----------
         last_token_id_tensor = torch.tensor(

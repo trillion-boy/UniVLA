@@ -126,6 +126,7 @@ def run_maniskill2_eval_single_episode(
         # step the model; "raw_action" is raw model action output; "action" is the processed action to be sent into maniskill env
         raw_action, action = model.step(image, task_description)
         step_confidence = getattr(model, 'last_confidence', 0.0)
+        combined_score  = getattr(model, 'last_combined_score', None)
         rolling_conf = getattr(model, 'rolling_conf', None)
         spsa_threshold = getattr(model, 'spsa_threshold', None)
         use_spsa = getattr(model, 'use_spsa', False)
@@ -133,9 +134,10 @@ def run_maniskill2_eval_single_episode(
         if spsa_fired:
             spsa_fired_count += 1
         if timestep % conf_log_every == 0:
-            rolling_str = f"  rolling={rolling_conf:.3f}" if rolling_conf is not None else ""
-            spsa_str = f"  SPSA={'ON' if spsa_fired else 'off'}" if use_spsa else ""
-            print(f"  [step {timestep:3d}] conf={step_confidence:.3f}{rolling_str}{spsa_str}")
+            rolling_str  = f"  rolling={rolling_conf:.3f}" if rolling_conf is not None else ""
+            score_str    = f"  score={combined_score:.3f}" if combined_score is not None else ""
+            spsa_str     = f"  SPSA={'ON' if spsa_fired else 'off'}" if use_spsa else ""
+            print(f"  [step {timestep:3d}] conf={step_confidence:.3f}{rolling_str}{score_str}{spsa_str}")
 
         # action chunk
         raw_action_list = raw_action
