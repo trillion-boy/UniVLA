@@ -110,6 +110,8 @@ def run_maniskill2_eval_single_episode(
     success = "failure"
 
     confidences = []
+    spsa_fired_count = 0
+    conf_log_every = 10  # print per-step conf every N steps
 
     def _overlay_confidence(img, conf):
         pil_img = PILImage.fromarray(img)
@@ -124,6 +126,16 @@ def run_maniskill2_eval_single_episode(
         # step the model; "raw_action" is raw model action output; "action" is the processed action to be sent into maniskill env
         raw_action, action = model.step(image, task_description)
         step_confidence = getattr(model, 'last_confidence', 0.0)
+        rolling_conf = getattr(model, 'rolling_conf', None)
+        spsa_threshold = getattr(model, 'spsa_threshold', None)
+        use_spsa = getattr(model, 'use_spsa', False)
+        spsa_fired = use_spsa and rolling_conf is not None and spsa_threshold is not None and rolling_conf < spsa_threshold
+        if spsa_fired:
+            spsa_fired_count += 1
+        if timestep % conf_log_every == 0:
+            rolling_str = f"  rolling={rolling_conf:.3f}" if rolling_conf is not None else ""
+            spsa_str = f"  SPSA={'ON' if spsa_fired else 'off'}" if use_spsa else ""
+            print(f"  [step {timestep:3d}] conf={step_confidence:.3f}{rolling_str}{spsa_str}")
 
         # action chunk
         raw_action_list = raw_action
@@ -217,7 +229,13 @@ def run_maniskill2_eval_single_episode(
         optimize=False,
     )
     confs = np.array(confidences)
-    print(f"[GIF] mean_conf={np.mean(confs):.3f}  min_conf={np.min(confs):.3f}  max_conf={np.max(confs):.3f}  saved → {gif_path}")
+    p25, p75 = np.percentile(confs, 25), np.percentile(confs, 75)
+    spsa_info = f"  spsa_fired={spsa_fired_count}/{len(confs)}steps" if getattr(model, 'use_spsa', False) else ""
+    print(f"[GIF] mean={np.mean(confs):.3f}  min={np.min(confs):.3f}  max={np.max(confs):.3f}  p25={p25:.3f}  p75={p75:.3f}{spsa_info}  → {gif_path}")
+    # per-step conf timeline (every 10 steps)
+    if len(confs) > 0:
+        timeline = "  ".join(f"s{i*conf_log_every}:{confs[i*conf_log_every]:.3f}" for i in range(len(confs) // conf_log_every + 1) if i * conf_log_every < len(confs))
+        print(f"[CONF timeline] {timeline}")
 
     # save action trajectory
     # action_path = video_path.replace(".mp4", ".png")
