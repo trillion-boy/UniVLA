@@ -70,9 +70,9 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
         spsa_beta=0.7,
         # L2-norm clipping
         spsa_max_norm=1.0,
-        # confidence-triggered activation
-        spsa_threshold=0.40,
-        # EMA of rolling confidence
+        # score-triggered activation (fires when rolling_score < threshold)
+        spsa_threshold=0.55,
+        # EMA decay for rolling_score
         ema_decay=0.3,
         # [v2] warm-init: L_init = task_emb * this_scale
         task_emb_scale=0.01,
@@ -102,8 +102,9 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
 
         hidden_size = self.model.model.embed_tokens.weight.shape[1]
         self.L_persistent = torch.zeros(hidden_size, dtype=torch.bfloat16, device=self.device)
-        self.rolling_conf = 1.0   # start optimistic → SPSA won't fire immediately
+        self.rolling_score = 1.0  # start optimistic → SPSA won't fire immediately
         self.last_combined_score = 0.0
+        self.last_confidence = 0.0   # raw conf, kept for logging only
         self._spsa_ever_ran = False
         self._step_count = 0
         # Check if last-layer hook is possible (LLaMA-style architecture)
@@ -121,8 +122,9 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
         super().reset()
         hidden_size = self.model.model.embed_tokens.weight.shape[1]
         self.L_persistent = torch.zeros(hidden_size, dtype=torch.bfloat16, device=self.device)
-        self.rolling_conf = 1.0
+        self.rolling_score = 1.0
         self.last_combined_score = 0.0
+        self.last_confidence = 0.0
         self._spsa_ever_ran = False
         self._step_count = 0
 
@@ -370,7 +372,7 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
             return gen, orig_gen, combined_score, raw_conf
 
         # ---------- SPSA or warm-start apply ----------
-        if self.use_spsa and self.rolling_conf < self.spsa_threshold:
+        if self.use_spsa and self.rolling_score < self.spsa_threshold:
             # [v2] Warm-init: seed L from task embedding on first SPSA run
             if not self._spsa_ever_ran:
                 L = (task_emb * self.task_emb_scale).to(torch.bfloat16)
@@ -406,13 +408,13 @@ class EmuVLAInferenceSPSA_v2(EmuVLAInference):
             # Apply persistent L from previous chunk (with cosine weighting)
             outputs, orig_outputs, chunk_score, chunk_confidence = _run_generate(self.L_persistent)
 
-        # EMA update on rolling confidence (raw conf, used for SPSA trigger threshold)
-        self.rolling_conf = (
-            self.ema_decay * self.rolling_conf
-            + (1 - self.ema_decay) * chunk_confidence
+        # EMA update on rolling_score (used for SPSA trigger)
+        self.rolling_score = (
+            self.ema_decay * self.rolling_score
+            + (1 - self.ema_decay) * chunk_score
         )
-        self.last_confidence = chunk_confidence
         self.last_combined_score = chunk_score
+        self.last_confidence = chunk_confidence  # raw conf, for logging only
 
         # ---------- Decode action (identical to parent) ----------
         last_token_id_tensor = torch.tensor(

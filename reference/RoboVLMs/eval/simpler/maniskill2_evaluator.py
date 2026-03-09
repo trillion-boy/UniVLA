@@ -126,18 +126,18 @@ def run_maniskill2_eval_single_episode(
         # step the model; "raw_action" is raw model action output; "action" is the processed action to be sent into maniskill env
         raw_action, action = model.step(image, task_description)
         step_confidence = getattr(model, 'last_confidence', 0.0)
-        combined_score  = getattr(model, 'last_combined_score', None)
-        rolling_conf = getattr(model, 'rolling_conf', None)
+        combined_score = getattr(model, 'last_combined_score', None)
+        rolling_score  = getattr(model, 'rolling_score', None)
         spsa_threshold = getattr(model, 'spsa_threshold', None)
         use_spsa = getattr(model, 'use_spsa', False)
-        spsa_fired = use_spsa and rolling_conf is not None and spsa_threshold is not None and rolling_conf < spsa_threshold
+        spsa_fired = use_spsa and rolling_score is not None and spsa_threshold is not None and rolling_score < spsa_threshold
         if spsa_fired:
             spsa_fired_count += 1
         if timestep % conf_log_every == 0:
-            rolling_str  = f"  rolling={rolling_conf:.3f}" if rolling_conf is not None else ""
-            score_str    = f"  score={combined_score:.3f}" if combined_score is not None else ""
-            spsa_str     = f"  SPSA={'ON' if spsa_fired else 'off'}" if use_spsa else ""
-            print(f"  [step {timestep:3d}] conf={step_confidence:.3f}{rolling_str}{score_str}{spsa_str}")
+            rolling_str = f"  rolling_score={rolling_score:.3f}" if rolling_score is not None else ""
+            score_str   = f"  score={combined_score:.3f}" if combined_score is not None else ""
+            spsa_str    = f"  SPSA={'ON' if spsa_fired else 'off'}" if use_spsa else ""
+            print(f"  [step {timestep:3d}] conf={step_confidence:.3f}{score_str}{rolling_str}{spsa_str}")
 
         # action chunk
         raw_action_list = raw_action
@@ -233,7 +233,7 @@ def run_maniskill2_eval_single_episode(
     confs = np.array(confidences)
     p25, p75 = np.percentile(confs, 25), np.percentile(confs, 75)
     spsa_info = f"  spsa_fired={spsa_fired_count}/{len(confs)}steps" if getattr(model, 'use_spsa', False) else ""
-    print(f"[GIF] mean={np.mean(confs):.3f}  min={np.min(confs):.3f}  max={np.max(confs):.3f}  p25={p25:.3f}  p75={p75:.3f}{spsa_info}  → {gif_path}")
+    print(f"[GIF] conf_mean={np.mean(confs):.3f}  p25={p25:.3f}  p75={p75:.3f}{spsa_info}  → {gif_path}")
     # per-step conf timeline (every 10 steps)
     if len(confs) > 0:
         timeline = "  ".join(f"s{i*conf_log_every}:{confs[i*conf_log_every]:.3f}" for i in range(len(confs) // conf_log_every + 1) if i * conf_log_every < len(confs))
