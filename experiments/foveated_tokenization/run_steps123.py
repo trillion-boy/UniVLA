@@ -136,13 +136,16 @@ def extract_samples(task: str, n: int) -> list[dict]:
         elif img.dtype != np.uint8:
             img = (img * 255).astype(np.uint8)
 
+        # gymnasium wrapper가 private attr를 막으므로 unwrapped로 접근
+        raw_env = env.unwrapped
+
         # 카메라 파라미터
-        cam_params = env._cameras[cam_key].get_params()
+        cam_params = raw_env._cameras[cam_key].get_params()
         intrinsic  = cam_params["intrinsic_cv"]   # (3,3)
         extrinsic  = cam_params["extrinsic_cv"]   # (4,4)
 
         # GT object 위치
-        obj      = _get_manip_obj(env, task)
+        obj      = _get_manip_obj(raw_env, task)
         obj_3d   = np.array(obj.pose.p)           # (3,)
         pixel_xy = project_3d_to_2d(obj_3d, intrinsic, extrinsic).astype(int)
 
