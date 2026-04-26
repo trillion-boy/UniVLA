@@ -172,37 +172,57 @@ def reconstruct_foveated(
     canvas_shape: Tuple[int, int],
     bg_color: Tuple[int, int, int] = (30, 30, 30),
 ) -> np.ndarray:
-    """
-    Patches를 원래 위치에 upsample하여 canvas에 그림.
-    바깥 level일수록 먼저 그려서 안쪽이 위에 덮임 (고해상도가 최상위).
-
-    Args:
-        canvas_shape: (H, W) 출력 canvas 크기.
-        bg_color    : 배경색 (RGB).
-    """
+    """Patches를 원래 위치에 upsample하여 단색 배경 canvas에 그림."""
     H, W = canvas_shape
     canvas = np.full((H, W, 3), bg_color, dtype=np.uint8)
+    _paste_patches(canvas, patches, W, H)
+    return canvas
 
-    # 바깥 → 안쪽 순서로 그리기 (level 내림차순)
+
+def reconstruct_foveated_with_context(
+    image: np.ndarray,
+    patches: List[FovPatch],
+    blur_scale: float = 0.06,
+) -> np.ndarray:
+    """
+    Bio-inspired foveated reconstruction.
+
+    배경 = 원본 이미지를 극단적으로 다운샘플→업샘플한 blurry 버전 (주변 환경 맥락 유지).
+    그 위에 foveated patches(L1/L2/L3)를 덮어 중심부는 고해상도로 표현.
+
+    Args:
+        image     : 원본 이미지 (H, W, 3) uint8.
+        patches   : foveated_tokenize() 결과.
+        blur_scale: 배경 blur 강도. 작을수록 더 뭉개짐 (0.06 ≈ 1/16 해상도).
+    """
+    H, W = image.shape[:2]
+
+    # 극단적 다운샘플 → 업샘플 → blurry 배경
+    small_h = max(1, int(H * blur_scale))
+    small_w = max(1, int(W * blur_scale))
+    small   = cv2.resize(image, (small_w, small_h), interpolation=cv2.INTER_AREA)
+    canvas  = cv2.resize(small, (W, H), interpolation=cv2.INTER_LINEAR)
+
+    # 중심부: foveated patches로 덮기 (바깥 → 안쪽 순서)
+    _paste_patches(canvas, patches, W, H)
+    return canvas
+
+
+def _paste_patches(canvas: np.ndarray, patches: List[FovPatch], W: int, H: int) -> None:
+    """patches를 canvas에 in-place로 붙임 (바깥 level 먼저 → 안쪽이 위에 덮임)."""
     for p in sorted(patches, key=lambda x: -x.level):
         x0, y0 = p.orig_x0, p.orig_y0
         x1, y1 = x0 + p.orig_size, y0 + p.orig_size
 
-        # canvas 밖이면 skip
         if x1 <= 0 or y1 <= 0 or x0 >= W or y0 >= H:
             continue
 
-        # patch를 orig_size×orig_size로 upsample
         up = cv2.resize(p.patch, (p.orig_size, p.orig_size), interpolation=cv2.INTER_NEAREST)
 
-        # canvas 경계에 맞춰 clamp
-        src_x0 = max(0, -x0);    src_y0 = max(0, -y0)
+        src_x0 = max(0, -x0);  src_y0 = max(0, -y0)
         src_x1 = p.orig_size - max(0, x1 - W)
         src_y1 = p.orig_size - max(0, y1 - H)
-
-        dst_x0 = max(0, x0);    dst_y0 = max(0, y0)
-        dst_x1 = min(W, x1);    dst_y1 = min(H, y1)
+        dst_x0 = max(0, x0);   dst_y0 = max(0, y0)
+        dst_x1 = min(W, x1);   dst_y1 = min(H, y1)
 
         canvas[dst_y0:dst_y1, dst_x0:dst_x1] = up[src_y0:src_y1, src_x0:src_x1]
-
-    return canvas

@@ -47,6 +47,7 @@ from foveated_tokenization import (   # noqa: E402
     foveated_tokenize,
     patches_to_array,
     reconstruct_foveated,
+    reconstruct_foveated_with_context,
     PATCH_OUT,
     GRID,
 )
@@ -192,7 +193,8 @@ def visualize_sample(
 
     # ── Foveated tokenization ──
     patches  = foveated_tokenize(img, int(cx), int(cy))
-    recon    = reconstruct_foveated(patches, (H, W))
+    # 배경: 원본 blurry → 위에 foveated patches 덮기 (주변 환경 맥락 유지)
+    recon    = reconstruct_foveated_with_context(img, patches)
     tokens   = patches_to_array(patches)   # (N, 16, 16, 3)
     N        = len(patches)
 
