@@ -25,6 +25,7 @@ import time
 from typing import Dict, List
 
 import numpy as np
+import torch
 
 # ── Path setup ─────────────────────────────────────────────────────────────────
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -307,6 +308,9 @@ def main():
             f"({baseline_result['n_episodes']} eps)"
         )
         del baseline
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # ── Foveated ──────────────────────────────────────────────────────────────
     if not args.baseline_only:
