@@ -410,6 +410,7 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         device: str,
         policy_setup: str = "widowx_bridge",
         fast_path: Optional[str] = None,
+        lora_path: Optional[str] = None,
         dino_model: str = "IDEA-Research/grounding-dino-tiny",
         dino_cache_steps: int = 5,
         box_threshold: float = 0.3,
@@ -418,6 +419,7 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         dino_debug_dir: Optional[str] = None,
     ):
         self._fast_path_override = fast_path
+        self._lora_path = lora_path
         self.blur_scale = blur_scale
         self._current_instruction: str = ""
 
@@ -443,7 +445,14 @@ class FoveatedEmuVLAInference(EmuVLAInference):
             self.emu_hub,
             torch_dtype=torch.bfloat16,
             attn_implementation="sdpa",
-        ).to(device).eval()
+        )
+        if getattr(self, "_lora_path", None):
+            from peft import PeftModel
+            print(f"[lora] Loading LoRA adapter from {self._lora_path} ...")
+            self.model = PeftModel.from_pretrained(self.model, self._lora_path)
+            self.model = self.model.merge_and_unload()
+            print("[lora] Adapter merged into base model.")
+        self.model = self.model.to(device).eval()
 
         self.tokenizer = Emu3Tokenizer.from_pretrained(
             self.emu_hub,

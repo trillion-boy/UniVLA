@@ -311,6 +311,11 @@ def main():
         "--dino-debug-dir", default=None,
         help="Directory to save DINO detection overlay images for debugging"
     )
+    parser.add_argument(
+        "--lora-path", default=None,
+        help="Path to LoRA adapter directory (output of train_lora_foveated.py). "
+             "Applied to the foveated model only."
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -373,6 +378,7 @@ def main():
             device=args.device,
             policy_setup=args.policy_setup,
             fast_path=args.fast_path,
+            lora_path=args.lora_path,
             dino_model=args.dino_model,
             dino_cache_steps=args.dino_cache_steps,
             box_threshold=args.box_threshold,
