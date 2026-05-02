@@ -35,8 +35,10 @@ from transformers.feature_extraction_utils import BatchFeature
 # ── Repo path setup ────────────────────────────────────────────────────────────
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _EMU3 = os.path.join(_ROOT, "reference", "Emu3")
-if _EMU3 not in sys.path:
-    sys.path.insert(0, _EMU3)
+# _ROOT must be in sys.path so emu3/modeling_emu3.py can find `models.policy_head`
+for _p in [_ROOT, _EMU3]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from emu3.mllm import Emu3MoE, Emu3Processor, Emu3Tokenizer  # noqa: E402
 

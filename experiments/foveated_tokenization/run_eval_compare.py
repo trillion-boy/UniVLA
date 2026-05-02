@@ -33,7 +33,7 @@ _EMU3 = os.path.join(_ROOT, "reference", "Emu3")
 _SIMPLER = "/content/SimplerEnv"
 _MANISKILL = os.path.join(_SIMPLER, "ManiSkill2_real2sim")
 
-for _p in [_ROBOVLMS, _EMU3, _SIMPLER, _MANISKILL]:
+for _p in [_ROOT, _ROBOVLMS, _EMU3, _SIMPLER, _MANISKILL]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
