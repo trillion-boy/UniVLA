@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
+from PIL import Image
 
 # ── Path setup ─────────────────────────────────────────────────────────────────
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -194,8 +195,11 @@ def run_single_episode(
 
     if video_path and frames:
         try:
-            import imageio
-            imageio.mimsave(video_path, frames, fps=10)
+            pil_frames = [Image.fromarray(f) for f in frames]
+            pil_frames[0].save(
+                video_path, save_all=True, append_images=pil_frames[1:],
+                loop=0, duration=100,
+            )
             print(f"    Video saved: {video_path}")
         except Exception as e:
             print(f"    Video save failed: {e}")
@@ -295,6 +299,10 @@ def main():
         "--save-video", action="store_true",
         help="Save per-episode GIF videos to output-dir"
     )
+    parser.add_argument(
+        "--dino-debug-dir", default=None,
+        help="Directory to save DINO detection overlay images for debugging"
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -362,6 +370,7 @@ def main():
             box_threshold=args.box_threshold,
             text_threshold=args.text_threshold,
             blur_scale=args.blur_scale,
+            dino_debug_dir=args.dino_debug_dir,
         )
 
         foveated_result = evaluate_model(

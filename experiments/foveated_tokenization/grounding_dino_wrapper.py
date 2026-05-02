@@ -43,6 +43,7 @@ class GroundingDINOWrapper:
         text_threshold: float = 0.25,
         device: Optional[str] = None,
         cache_steps: int = 5,
+        debug_dir: Optional[str] = None,
     ):
         self.model_name = model_name
         self.box_threshold = box_threshold
@@ -57,6 +58,10 @@ class GroundingDINOWrapper:
         self._cache_cx: Optional[float] = None
         self._cache_cy: Optional[float] = None
         self._cache_step: int = 0
+
+        # Debug visualization
+        self._debug_dir = debug_dir
+        self._debug_count = 0
 
     def _load_model(self) -> None:
         if self._model is not None:
@@ -148,10 +153,39 @@ class GroundingDINOWrapper:
             return None
 
         best_idx = results["scores"].argmax().item()
+        score = results["scores"][best_idx].item()
         box = results["boxes"][best_idx].cpu().numpy()  # (x_min, y_min, x_max, y_max)
         cx = float((box[0] + box[2]) / 2)
         cy = float((box[1] + box[3]) / 2)
+
+        # Save debug visualization if requested
+        if self._debug_dir is not None:
+            self._save_debug_image(image_rgb, box, cx, cy, score, text_query)
+
         return cx, cy
+
+    def _save_debug_image(
+        self,
+        image_rgb: np.ndarray,
+        box: np.ndarray,
+        cx: float,
+        cy: float,
+        score: float,
+        label: str,
+    ) -> None:
+        import os
+        from PIL import ImageDraw, ImageFont
+        os.makedirs(self._debug_dir, exist_ok=True)
+        img = Image.fromarray(image_rgb).copy()
+        draw = ImageDraw.Draw(img)
+        x0, y0, x1, y1 = box
+        draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 0), width=3)
+        draw.ellipse([cx - 6, cy - 6, cx + 6, cy + 6], fill=(0, 255, 0))
+        draw.text((x0, max(0, y0 - 14)), f"{label} {score:.2f}", fill=(255, 0, 0))
+        fname = os.path.join(self._debug_dir, f"dino_det_{self._debug_count:04d}.png")
+        img.save(fname)
+        self._debug_count += 1
+        print(f"[DINO] Debug image saved: {fname}")
 
     def get_fovea_center(
         self,

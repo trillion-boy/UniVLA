@@ -415,6 +415,7 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         box_threshold: float = 0.3,
         text_threshold: float = 0.25,
         blur_scale: float = 0.06,
+        dino_debug_dir: Optional[str] = None,
     ):
         self._fast_path_override = fast_path
         self.blur_scale = blur_scale
@@ -426,6 +427,7 @@ class FoveatedEmuVLAInference(EmuVLAInference):
             text_threshold=text_threshold,
             device=device,
             cache_steps=dino_cache_steps,
+            debug_dir=dino_debug_dir,
         )
 
         super().__init__(
