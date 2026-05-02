@@ -284,7 +284,11 @@ def main():
         print("\n" + "=" * 60)
         print("  Baseline EmuVLA")
         print("=" * 60)
-        from eval.simpler.model_wrapper import EmuVLAInference
+        # Import from foveated_inference (standalone, no robovlms/lightning deps)
+        _exp_dir = os.path.join(_ROOT, "experiments", "foveated_tokenization")
+        if _exp_dir not in sys.path:
+            sys.path.insert(0, _exp_dir)
+        from foveated_inference import EmuVLAInference
 
         baseline = EmuVLAInference(
             emu_hub=args.emu_hub,
@@ -293,7 +297,7 @@ def main():
             device=args.device,
             policy_setup=args.policy_setup,
         )
-        # Fix fast-path after init if override provided
+        # fast-path override
         if args.fast_path:
             from transformers import AutoProcessor
             pfx = (
@@ -320,9 +324,7 @@ def main():
         print("\n" + "=" * 60)
         print("  Foveated EmuVLA (DINO + foveated reconstruction)")
         print("=" * 60)
-        from experiments.foveated_tokenization.foveated_inference import (
-            FoveatedEmuVLAInference,
-        )
+        from foveated_inference import FoveatedEmuVLAInference
 
         foveated = FoveatedEmuVLAInference(
             emu_hub=args.emu_hub,
