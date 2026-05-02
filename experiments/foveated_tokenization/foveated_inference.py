@@ -156,7 +156,7 @@ class EmuVLAInference:
         ).to(device).eval()
 
         self.tokenizer = Emu3Tokenizer.from_pretrained(
-            self.vq_hub,
+            self.emu_hub,
             model_max_length=self.model.config.max_position_embeddings,
             padding_side="right",
             use_fast=False,
@@ -435,7 +435,7 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         ).to(device).eval()
 
         self.tokenizer = Emu3Tokenizer.from_pretrained(
-            self.vq_hub,
+            self.emu_hub,
             model_max_length=self.model.config.max_position_embeddings,
             padding_side="right",
             use_fast=False,
