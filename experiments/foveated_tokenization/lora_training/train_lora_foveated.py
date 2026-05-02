@@ -70,11 +70,19 @@ def _patch_dataset_vision_hub(vision_hub: str) -> None:
             self.image_processor = AutoImageProcessor.from_pretrained(
                 vision_hub, trust_remote_code=True
             )
-            self.image_tokenizer = AutoModel.from_pretrained(
+            # Load VQ tokenizer on GPU so encode() runs ~100x faster than CPU
+            _vq = AutoModel.from_pretrained(
                 vision_hub, trust_remote_code=True
-            )
+            ).cuda().eval()
+            # Wrap encode() to auto-move pixel_values to CUDA and return CPU tokens
+            _orig_enc = _vq.encode
+            def _gpu_encode(pixel_values):
+                with torch.no_grad():
+                    return _orig_enc(pixel_values.to("cuda")).cpu()
+            _vq.encode = _gpu_encode
+            self.image_tokenizer = _vq
             self.image_processor.min_pixels = 80 * 80
-            print(f"[patch] vision_hub set → {vision_hub}")
+            print(f"[patch] vision_hub set → {vision_hub} (VQ on CUDA)")
 
     ds_module.Emu3SFTDataset.__init__ = patched_init
 
