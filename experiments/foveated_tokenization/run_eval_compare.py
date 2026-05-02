@@ -361,8 +361,14 @@ def main():
 
     all_results: Dict = {"task": args.task, "args": vars(args), "results": {}}
 
+    # Determine which models to run: if any *_only flag is set, run only that one.
+    any_only = any([
+        args.baseline_only, args.foveated_only, args.token_fovea_only,
+        args.true_fovea_only, args.dual_fovea_only,
+    ])
+
     # ── Baseline ───────────────────────────────────────────────────────────────
-    if not args.foveated_only:
+    if args.baseline_only or not any_only:
         print("\n" + "=" * 60)
         print("  Baseline EmuVLA")
         print("=" * 60)
@@ -398,7 +404,7 @@ def main():
             torch.cuda.empty_cache()
 
     # ── Image-level Foveated ──────────────────────────────────────────────────
-    if not args.baseline_only and not args.token_fovea_only:
+    if args.foveated_only or not any_only:
         print("\n" + "=" * 60)
         print("  Foveated EmuVLA (image-level: DINO + blur)")
         print("=" * 60)
@@ -437,7 +443,7 @@ def main():
             torch.cuda.empty_cache()
 
     # ── Token-level Foveated ──────────────────────────────────────────────────
-    if args.token_fovea_only or (not args.baseline_only and not args.foveated_only):
+    if args.token_fovea_only or not any_only:
         print("\n" + "=" * 60)
         print(f"  Token-Foveated EmuVLA (token-level, fovea_fraction={args.fovea_fraction})")
         print("=" * 60)
@@ -475,7 +481,7 @@ def main():
             torch.cuda.empty_cache()
 
     # ── True Foveated ─────────────────────────────────────────────────────────
-    if args.true_fovea_only or (not args.baseline_only and not args.foveated_only and not args.token_fovea_only and not args.dual_fovea_only):
+    if args.true_fovea_only or not any_only:
         print("\n" + "=" * 60)
         print(f"  True-Foveated EmuVLA (crop={args.crop_fraction}, fovea={args.fovea_fraction})")
         print("=" * 60)
@@ -511,7 +517,7 @@ def main():
         del true_foveated
 
     # ── Dual-Object True Foveated ─────────────────────────────────────────────
-    if args.dual_fovea_only or (not args.baseline_only and not args.foveated_only and not args.token_fovea_only and not args.true_fovea_only):
+    if args.dual_fovea_only or not any_only:
         print("\n" + "=" * 60)
         print(f"  Dual-Obj True-Foveated EmuVLA (crop={args.crop_fraction}, fovea={args.fovea_fraction})")
         print("=" * 60)
