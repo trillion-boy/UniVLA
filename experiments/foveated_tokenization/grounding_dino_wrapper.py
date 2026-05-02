@@ -109,13 +109,23 @@ class GroundingDINOWrapper:
             outputs = self._model(**inputs)
 
         target_sizes = torch.tensor([pil_img.size[::-1]])  # (H, W)
-        results = self._processor.post_process_grounded_object_detection(
-            outputs,
-            inputs.input_ids,
-            box_threshold=self.box_threshold,
-            text_threshold=self.text_threshold,
-            target_sizes=target_sizes,
-        )[0]
+        # transformers <= 4.44: box_threshold / text_threshold
+        # transformers >= 4.45: threshold (통합)
+        try:
+            results = self._processor.post_process_grounded_object_detection(
+                outputs,
+                inputs.input_ids,
+                box_threshold=self.box_threshold,
+                text_threshold=self.text_threshold,
+                target_sizes=target_sizes,
+            )[0]
+        except TypeError:
+            results = self._processor.post_process_grounded_object_detection(
+                outputs,
+                inputs.input_ids,
+                threshold=self.box_threshold,
+                target_sizes=target_sizes,
+            )[0]
 
         if len(results["boxes"]) == 0:
             return None
