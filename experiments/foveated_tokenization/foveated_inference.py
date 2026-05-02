@@ -521,3 +521,110 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         super().reset()
         self.dino.reset()
         self._current_instruction = ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TokenFoveatedEmuVLAInference  (Path 2: token-level foveation)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TokenFoveatedEmuVLAInference(EmuVLAInference):
+    """
+    Token-level foveation: encode the NORMAL image (no blurring),
+    then replace peripheral VQ tokens with a background token.
+
+    Unlike FoveatedEmuVLAInference (image-level blur), this never feeds
+    blurry pixels to the VQ-VAE, so there is zero distribution shift.
+    The fovea effect is applied AFTER encoding, purely at the token level.
+
+    fovea_fraction: fraction of the token-grid shorter side used as fovea radius.
+                    0.4 → circle covering ~50% of image area.
+    """
+
+    def __init__(
+        self,
+        emu_hub: str,
+        vq_hub: str,
+        vision_hub: str,
+        device: str,
+        policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
+        dino_model: str = "IDEA-Research/grounding-dino-tiny",
+        dino_cache_steps: int = 5,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.15,
+        fovea_fraction: float = 0.4,
+        dino_debug_dir: Optional[str] = None,
+    ):
+        self._fast_path_override = fast_path
+        self._fovea_fraction = fovea_fraction
+        self._current_instruction: str = ""
+
+        self.dino = GroundingDINOWrapper(
+            model_name=dino_model,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            device=device,
+            cache_steps=dino_cache_steps,
+            debug_dir=dino_debug_dir,
+        )
+        super().__init__(
+            emu_hub=emu_hub,
+            vq_hub=vq_hub,
+            vision_hub=vision_hub,
+            device=device,
+            policy_setup=policy_setup,
+        )
+
+    def _foveate_tokens(
+        self,
+        tokens: torch.Tensor,
+        cx_px: int, cy_px: int,
+        H_img: int, W_img: int,
+    ) -> torch.Tensor:
+        """Replace tokens outside the fovea circle with the background token."""
+        H_t, W_t = tokens.shape[-2], tokens.shape[-1]
+
+        cx_t = cx_px * W_t / W_img
+        cy_t = cy_px * H_t / H_img
+
+        y_idx = torch.arange(H_t, dtype=torch.float32)
+        x_idx = torch.arange(W_t, dtype=torch.float32)
+        yy, xx = torch.meshgrid(y_idx, x_idx, indexing="ij")
+        dist = torch.sqrt((xx - cx_t) ** 2 + (yy - cy_t) ** 2)
+
+        fovea_radius = min(H_t, W_t) * self._fovea_fraction
+        peripheral_mask = dist > fovea_radius  # (H_t, W_t) bool
+
+        # Use the most common token in the image as background fill
+        bg_token = int(tokens.flatten().mode().values.item())
+
+        tokens_out = tokens.clone()
+        tokens_out[0][peripheral_mask] = bg_token
+        return tokens_out
+
+    def preprocess(self, image: np.ndarray):
+        H, W = image.shape[:2]
+        if self._current_instruction:
+            cx, cy = self.dino.get_fovea_center(image, self._current_instruction)
+        else:
+            cx, cy = W // 2, H // 2
+
+        # Encode NORMAL image — VQ-VAE sees clean pixels (no distribution shift)
+        agent_view = Image.fromarray(image).resize(self.image_size)
+        image_x = self.image_processor(agent_view, return_tensors="pt")[
+            "pixel_values"
+        ].cuda()
+        image_code = self.image_tokenizer.encode(image_x)  # (1, H_t, W_t)
+
+        # Apply fovea mask at token level
+        image_code = self._foveate_tokens(image_code, cx, cy, H, W)
+        return image_code, None
+
+    def step(self, image: np.ndarray, goal: str):
+        self._current_instruction = goal
+        return super().step(image, goal)
+
+    def reset(self) -> None:
+        super().reset()
+        self.dino.reset()
+        self._current_instruction = ""

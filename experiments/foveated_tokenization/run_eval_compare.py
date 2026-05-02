@@ -296,12 +296,20 @@ def main():
     parser.add_argument("--box-threshold", type=float, default=0.15)
     parser.add_argument("--text-threshold", type=float, default=0.15)
     parser.add_argument("--blur-scale", type=float, default=0.06)
+    parser.add_argument(
+        "--fovea-fraction", type=float, default=0.4,
+        help="Token-fovea radius as fraction of token grid (0.4 = center 50%% of image area)"
+    )
     # Mode flags
     parser.add_argument(
         "--baseline-only", action="store_true", help="Run only baseline model"
     )
     parser.add_argument(
-        "--foveated-only", action="store_true", help="Run only foveated model"
+        "--foveated-only", action="store_true", help="Run only image-level foveated model"
+    )
+    parser.add_argument(
+        "--token-fovea-only", action="store_true",
+        help="Run only token-level foveated model (no image blurring)"
     )
     parser.add_argument(
         "--save-video", action="store_true",
@@ -364,10 +372,10 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # ── Foveated ──────────────────────────────────────────────────────────────
-    if not args.baseline_only:
+    # ── Image-level Foveated ──────────────────────────────────────────────────
+    if not args.baseline_only and not args.token_fovea_only:
         print("\n" + "=" * 60)
-        print("  Foveated EmuVLA (DINO + foveated reconstruction)")
+        print("  Foveated EmuVLA (image-level: DINO + blur)")
         print("=" * 60)
         from foveated_inference import FoveatedEmuVLAInference
 
@@ -394,11 +402,49 @@ def main():
         )
         all_results["results"]["foveated"] = foveated_result
         print(
-            f"\nFoveated success rate: "
+            f"\nFoveated (image-level) success rate: "
             f"{foveated_result['success_rate']:.1%} "
             f"({foveated_result['n_episodes']} eps)"
         )
         del foveated
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # ── Token-level Foveated ──────────────────────────────────────────────────
+    if args.token_fovea_only or (not args.baseline_only and not args.foveated_only):
+        print("\n" + "=" * 60)
+        print(f"  Token-Foveated EmuVLA (token-level, fovea_fraction={args.fovea_fraction})")
+        print("=" * 60)
+        from foveated_inference import TokenFoveatedEmuVLAInference
+
+        token_foveated = TokenFoveatedEmuVLAInference(
+            emu_hub=args.emu_hub,
+            vq_hub=args.vq_hub,
+            vision_hub=args.vision_hub,
+            device=args.device,
+            policy_setup=args.policy_setup,
+            fast_path=args.fast_path,
+            dino_model=args.dino_model,
+            dino_cache_steps=args.dino_cache_steps,
+            box_threshold=args.box_threshold,
+            text_threshold=args.text_threshold,
+            fovea_fraction=args.fovea_fraction,
+            dino_debug_dir=args.dino_debug_dir,
+        )
+
+        token_fovea_result = evaluate_model(
+            token_foveated, task_cfg, args.n_episodes,
+            model_name="token_fovea",
+            video_dir=args.output_dir if args.save_video else None,
+        )
+        all_results["results"]["token_fovea"] = token_fovea_result
+        print(
+            f"\nToken-Foveated success rate: "
+            f"{token_fovea_result['success_rate']:.1%} "
+            f"({token_fovea_result['n_episodes']} eps)"
+        )
+        del token_foveated
 
     # ── Save + print summary ───────────────────────────────────────────────────
     out_path = os.path.join(args.output_dir, f"results_{args.task}.json")
