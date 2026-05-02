@@ -99,7 +99,7 @@ TASK_CONFIGS: Dict[str, dict] = {
 }
 
 
-def _build_env(task_cfg: dict, robot_x: float, robot_y: float, robot_quat: list, ep_id: int):
+def _build_env(task_cfg: dict, ep_id: int):
     """Build a fresh SimplerEnv episode."""
     from simpler_env.utils.env.env_builder import (
         build_maniskill2_env,
@@ -118,14 +118,9 @@ def _build_env(task_cfg: dict, robot_x: float, robot_y: float, robot_quat: list,
     if task_cfg.get("scene_name"):
         build_kwargs["scene_name"] = task_cfg["scene_name"]
     env = build_maniskill2_env(task_cfg["env_name"], **build_kwargs)
-    options = {
-        "robot_init_options": {
-            "init_xy": np.array([robot_x, robot_y]),
-            "init_rot_quat": np.array(robot_quat),
-        },
-        "obj_init_options": {"episode_id": ep_id},
-    }
-    obs, _ = env.reset(options=options)
+    # Only pass obj_init_options — robot_init_xy moves the robot out of
+    # the camera's field of view, so we use the default robot position.
+    obs, _ = env.reset(options={"obj_init_options": {"episode_id": ep_id}})
     return env, obs, control_mode
 
 
@@ -137,9 +132,6 @@ def _get_image(env, obs, cam_name):
 def run_single_episode(
     model,
     task_cfg: dict,
-    robot_x: float,
-    robot_y: float,
-    robot_quat: list,
     ep_id: int,
     video_path: Optional[str] = None,
 ) -> Dict:
@@ -147,7 +139,7 @@ def run_single_episode(
     cam_name = task_cfg["obs_camera_name"]
     max_steps = task_cfg["max_episode_steps"]
 
-    env, obs, _ = _build_env(task_cfg, robot_x, robot_y, robot_quat, ep_id)
+    env, obs, _ = _build_env(task_cfg, ep_id)
     instruction = env.get_language_instruction()
     image = _get_image(env, obs, cam_name)
 
@@ -221,32 +213,29 @@ def evaluate_model(
     results: List[Dict] = []
     ep_count = 0
 
-    for robot_x in task_cfg["robot_init_xs"]:
-        for robot_y in task_cfg["robot_init_ys"]:
-            for robot_quat in task_cfg["robot_init_quats"]:
-                var_mode = task_cfg["obj_variation_mode"]
-                if var_mode == "episode":
-                    ep_ids = range(*task_cfg["obj_episode_range"])
-                else:
-                    ep_ids = range(n_episodes)
+    var_mode = task_cfg["obj_variation_mode"]
+    if var_mode == "episode":
+        ep_ids = list(range(*task_cfg["obj_episode_range"]))
+    else:
+        ep_ids = list(range(n_episodes))
 
-                for ep_id in ep_ids:
-                    if ep_count >= n_episodes:
-                        break
-                    vpath = None
-                    if video_dir:
-                        vpath = os.path.join(video_dir, f"{model_name}_ep{ep_count:02d}.gif")
-                    r = run_single_episode(
-                        model, task_cfg, robot_x, robot_y, robot_quat, ep_id,
-                        video_path=vpath,
-                    )
-                    results.append(r)
-                    status = "SUCCESS" if r["success"] else "FAIL"
-                    print(
-                        f"    ep {ep_count} (id={ep_id}): {status} "
-                        f"({r['steps']} steps, {r['elapsed']:.1f}s)"
-                    )
-                    ep_count += 1
+    for ep_id in ep_ids:
+        if ep_count >= n_episodes:
+            break
+        vpath = None
+        if video_dir:
+            vpath = os.path.join(video_dir, f"{model_name}_ep{ep_count:02d}.gif")
+        r = run_single_episode(
+            model, task_cfg, ep_id,
+            video_path=vpath,
+        )
+        results.append(r)
+        status = "SUCCESS" if r["success"] else "FAIL"
+        print(
+            f"    ep {ep_count} (id={ep_id}): {status} "
+            f"({r['steps']} steps, {r['elapsed']:.1f}s)"
+        )
+        ep_count += 1
 
     successes = [r["success"] for r in results]
     return {
