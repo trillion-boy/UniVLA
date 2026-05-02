@@ -93,6 +93,19 @@ TASK_CONFIGS: Dict[str, dict] = {
         "sim_freq": 513,
         "max_episode_steps": 80,
     },
+    "widowx_stack_cube": {
+        "env_name": "StackGreenCubeOnYellowCubeBakedTexInScene-v0",
+        "robot": "widowx_sink_camera_setup",
+        "scene_name": "bridge_table_1_v1",
+        "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png",
+        "rgb_overlay_cameras": ["3rd_view_camera"],
+        "obj_variation_mode": "episode",
+        "obj_episode_range": [0, 24],
+        "obs_camera_name": "3rd_view_camera",
+        "control_freq": 3,
+        "sim_freq": 513,
+        "max_episode_steps": 60,
+    },
 }
 
 
