@@ -57,7 +57,7 @@ TASK_CONFIGS: Dict[str, dict] = {
     "widowx_put_eggplant_in_basket": {
         "env_name": "PutEggplantInBasketScene-v0",
         "robot": "widowx",
-        "scene_name": "bridge_table_1_v1",
+        "scene_name": None,
         "robot_init_xs": [0.147],
         "robot_init_ys": [0.028],
         "robot_init_quats": [[1, 0, 0, 0]],
@@ -71,7 +71,7 @@ TASK_CONFIGS: Dict[str, dict] = {
     "widowx_carrot_on_plate": {
         "env_name": "PutCarrotOnPlateInScene-v0",
         "robot": "widowx",
-        "scene_name": "bridge_table_1_v1",
+        "scene_name": None,
         "robot_init_xs": [0.147],
         "robot_init_ys": [0.028],
         "robot_init_quats": [[1, 0, 0, 0]],
@@ -85,7 +85,7 @@ TASK_CONFIGS: Dict[str, dict] = {
     "widowx_spoon_on_towel": {
         "env_name": "PutSpoonOnTableClothInScene-v0",
         "robot": "widowx",
-        "scene_name": "bridge_table_1_v1",
+        "scene_name": None,
         "robot_init_xs": [0.147],
         "robot_init_ys": [0.028],
         "robot_init_quats": [[1, 0, 0, 0]],
@@ -107,16 +107,17 @@ def _build_env(task_cfg: dict, robot_x: float, robot_y: float, robot_quat: list,
     )
 
     control_mode = get_robot_control_mode(task_cfg["robot"], "emu_vla")
-    env = build_maniskill2_env(
-        task_cfg["env_name"],
+    build_kwargs = dict(
         obs_mode="rgbd",
         robot=task_cfg["robot"],
         sim_freq=task_cfg["sim_freq"],
         control_mode=control_mode,
         control_freq=task_cfg["control_freq"],
         max_episode_steps=task_cfg["max_episode_steps"],
-        scene_name=task_cfg["scene_name"],
     )
+    if task_cfg.get("scene_name"):
+        build_kwargs["scene_name"] = task_cfg["scene_name"]
+    env = build_maniskill2_env(task_cfg["env_name"], **build_kwargs)
     options = {
         "robot_init_options": {
             "init_xy": np.array([robot_x, robot_y]),
