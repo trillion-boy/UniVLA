@@ -37,6 +37,18 @@ for _p in [_ROBOVLMS, _EMU3, _SIMPLER, _MANISKILL]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# ── lightning stub (calvin model_wrapper imports it at module level) ────────────
+def _ensure_lightning_stub() -> None:
+    import types
+    if "lightning" not in sys.modules:
+        for name in ["lightning", "lightning.pytorch", "lightning.pytorch.trainer"]:
+            sys.modules.setdefault(name, types.ModuleType(name))
+        class _Trainer:
+            pass
+        sys.modules["lightning.pytorch.trainer"].Trainer = _Trainer
+
+_ensure_lightning_stub()
+
 # ── Task configurations ────────────────────────────────────────────────────────
 # Maps task shorthand → SimplerEnv build parameters.
 TASK_CONFIGS: Dict[str, dict] = {

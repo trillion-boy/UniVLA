@@ -36,6 +36,18 @@ for _p in [_ROBOVLMS, _EMU3]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# lightning stub (calvin model_wrapper가 module level에서 import함)
+def _ensure_lightning_stub() -> None:
+    import types
+    if "lightning" not in sys.modules:
+        for name in ["lightning", "lightning.pytorch", "lightning.pytorch.trainer"]:
+            sys.modules.setdefault(name, types.ModuleType(name))
+        class _Trainer:
+            pass
+        sys.modules["lightning.pytorch.trainer"].Trainer = _Trainer
+
+_ensure_lightning_stub()
+
 from eval.simpler.model_wrapper import EmuVLAInference  # noqa: E402
 from experiments.foveated_tokenization.foveated_tokenization import (  # noqa: E402
     foveated_tokenize,
