@@ -628,3 +628,125 @@ class TokenFoveatedEmuVLAInference(EmuVLAInference):
         super().reset()
         self.dino.reset()
         self._current_instruction = ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TrueFoveatedEmuVLAInference  (Look, Focus, Act style)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TrueFoveatedEmuVLAInference(EmuVLAInference):
+    """
+    True foveated tokenization (CVPR 2025 "Look, Focus, Act" style).
+
+    Total token count = same as baseline (1024).
+
+    Step 1 — Full image → 1024 peripheral tokens (1 token per 8×8 px patch)
+    Step 2 — Center crop (crop_fraction of image) upscaled to full size
+              → 1024 tokens, each covering fewer original pixels
+              → higher spatial resolution in the fovea region
+    Step 3 — Combine:
+              inside fovea circle  → center tokens  (high-res)
+              outside fovea circle → full-image tokens (low-res context)
+
+    crop_fraction : size of center crop relative to image dimension.
+                    0.5 → 128x128 out of 256x256 = 2x resolution boost.
+    fovea_fraction: fovea circle radius as fraction of token-grid short side.
+    """
+
+    def __init__(
+        self,
+        emu_hub: str,
+        vq_hub: str,
+        vision_hub: str,
+        device: str,
+        policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
+        dino_model: str = "IDEA-Research/grounding-dino-tiny",
+        dino_cache_steps: int = 5,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.15,
+        crop_fraction: float = 0.5,
+        fovea_fraction: float = 0.35,
+        dino_debug_dir: Optional[str] = None,
+    ):
+        self._fast_path_override = fast_path
+        self._crop_fraction = crop_fraction
+        self._fovea_fraction = fovea_fraction
+        self._current_instruction: str = ""
+
+        self.dino = GroundingDINOWrapper(
+            model_name=dino_model,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            device=device,
+            cache_steps=dino_cache_steps,
+            debug_dir=dino_debug_dir,
+        )
+        super().__init__(
+            emu_hub=emu_hub,
+            vq_hub=vq_hub,
+            vision_hub=vision_hub,
+            device=device,
+            policy_setup=policy_setup,
+        )
+
+    def preprocess(self, image: np.ndarray):
+        H, W = image.shape[:2]
+        if self._current_instruction:
+            cx, cy = self.dino.get_fovea_center(image, self._current_instruction)
+        else:
+            cx, cy = W // 2, H // 2
+
+        # ── 1. Full image → peripheral tokens ─────────────────────────────────
+        full_view = Image.fromarray(image).resize(self.image_size)
+        full_x = self.image_processor(full_view, return_tensors="pt")[
+            "pixel_values"
+        ].cuda()
+        full_tokens = self.image_tokenizer.encode(full_x)  # (1, H_t, W_t)
+
+        # ── 2. Center crop → upscale → high-res center tokens ─────────────────
+        half_h = int(H * self._crop_fraction / 2)
+        half_w = int(W * self._crop_fraction / 2)
+        x1 = max(0, cx - half_w);  x2 = min(W, cx + half_w)
+        y1 = max(0, cy - half_h);  y2 = min(H, cy + half_h)
+
+        crop = image[y1:y2, x1:x2]
+        crop_view = Image.fromarray(crop).resize(self.image_size)  # 2x upscale
+        crop_x = self.image_processor(crop_view, return_tensors="pt")[
+            "pixel_values"
+        ].cuda()
+        center_tokens = self.image_tokenizer.encode(crop_x)  # (1, H_t, W_t)
+
+        # ── 3. Combine ─────────────────────────────────────────────────────────
+        H_t, W_t = full_tokens.shape[-2], full_tokens.shape[-1]
+
+        cx_t = cx * W_t / W
+        cy_t = cy * H_t / H
+
+        y_idx = torch.arange(H_t, dtype=torch.float32)
+        x_idx = torch.arange(W_t, dtype=torch.float32)
+        yy, xx = torch.meshgrid(y_idx, x_idx, indexing="ij")
+        dist = torch.sqrt((xx - cx_t) ** 2 + (yy - cy_t) ** 2)
+        fovea_mask = dist <= min(H_t, W_t) * self._fovea_fraction
+
+        # Map each fovea position in full token grid → corresponding crop token
+        ys, xs = torch.where(fovea_mask)
+        px = xs.float() * W / W_t   # original pixel x
+        py = ys.float() * H / H_t   # original pixel y
+        cx_crop = ((px - x1) / (x2 - x1) * W_t).long()
+        cy_crop = ((py - y1) / (y2 - y1) * H_t).long()
+        valid = (cx_crop >= 0) & (cx_crop < W_t) & (cy_crop >= 0) & (cy_crop < H_t)
+
+        combined = full_tokens.clone()
+        combined[0, ys[valid], xs[valid]] = center_tokens[0, cy_crop[valid], cx_crop[valid]]
+
+        return combined, None
+
+    def step(self, image: np.ndarray, goal: str):
+        self._current_instruction = goal
+        return super().step(image, goal)
+
+    def reset(self) -> None:
+        super().reset()
+        self.dino.reset()
+        self._current_instruction = ""
