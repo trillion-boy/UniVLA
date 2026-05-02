@@ -56,11 +56,10 @@ _ensure_lightning_stub()
 TASK_CONFIGS: Dict[str, dict] = {
     "widowx_put_eggplant_in_basket": {
         "env_name": "PutEggplantInBasketScene-v0",
-        "robot": "widowx",
-        "scene_name": None,
-        "robot_init_xs": [0.147],
-        "robot_init_ys": [0.028],
-        "robot_init_quats": [[1, 0, 0, 0]],
+        "robot": "widowx_sink_camera_setup",
+        "scene_name": "bridge_table_1_v2",
+        "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
+        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_variation_mode": "episode",
         "obj_episode_range": [0, 3],
         "obs_camera_name": "3rd_view_camera",
@@ -70,11 +69,10 @@ TASK_CONFIGS: Dict[str, dict] = {
     },
     "widowx_carrot_on_plate": {
         "env_name": "PutCarrotOnPlateInScene-v0",
-        "robot": "widowx",
-        "scene_name": None,
-        "robot_init_xs": [0.147],
-        "robot_init_ys": [0.028],
-        "robot_init_quats": [[1, 0, 0, 0]],
+        "robot": "widowx_sink_camera_setup",
+        "scene_name": "bridge_table_1_v2",
+        "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
+        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_variation_mode": "episode",
         "obj_episode_range": [0, 3],
         "obs_camera_name": "3rd_view_camera",
@@ -84,11 +82,10 @@ TASK_CONFIGS: Dict[str, dict] = {
     },
     "widowx_spoon_on_towel": {
         "env_name": "PutSpoonOnTableClothInScene-v0",
-        "robot": "widowx",
-        "scene_name": None,
-        "robot_init_xs": [0.147],
-        "robot_init_ys": [0.028],
-        "robot_init_quats": [[1, 0, 0, 0]],
+        "robot": "widowx_sink_camera_setup",
+        "scene_name": "bridge_table_1_v2",
+        "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
+        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_variation_mode": "episode",
         "obj_episode_range": [0, 3],
         "obs_camera_name": "3rd_view_camera",
@@ -101,15 +98,17 @@ TASK_CONFIGS: Dict[str, dict] = {
 
 def _build_env(task_cfg: dict, ep_id: int):
     """Build a fresh SimplerEnv episode."""
+    import os
     from simpler_env.utils.env.env_builder import (
         build_maniskill2_env,
         get_robot_control_mode,
     )
 
-    control_mode = get_robot_control_mode(task_cfg["robot"], "emu_vla")
+    robot = task_cfg["robot"]
+    control_mode = get_robot_control_mode(robot, "emu_vla")
     build_kwargs = dict(
         obs_mode="rgbd",
-        robot=task_cfg["robot"],
+        robot=robot,
         sim_freq=task_cfg["sim_freq"],
         control_mode=control_mode,
         control_freq=task_cfg["control_freq"],
@@ -117,9 +116,24 @@ def _build_env(task_cfg: dict, ep_id: int):
     )
     if task_cfg.get("scene_name"):
         build_kwargs["scene_name"] = task_cfg["scene_name"]
+
+    # Visual matching: overlay real background image so sim looks like real robot
+    overlay_rel = task_cfg.get("rgb_overlay_path")
+    if overlay_rel:
+        # Resolve relative to SimplerEnv ManiSkill2 root
+        for base in ["/content/SimplerEnv", "/content/SimplerEnv/ManiSkill2_real2sim/.."]:
+            candidate = os.path.join(base, overlay_rel)
+            if os.path.exists(candidate):
+                build_kwargs["rgb_overlay_path"] = candidate
+                build_kwargs["rgb_overlay_cameras"] = task_cfg.get(
+                    "rgb_overlay_cameras", ["3rd_view_camera"]
+                )
+                print(f"[env] rgb_overlay: {candidate}")
+                break
+        else:
+            print(f"[env] WARNING: rgb_overlay not found at {overlay_rel}, skipping")
+
     env = build_maniskill2_env(task_cfg["env_name"], **build_kwargs)
-    # Only pass obj_init_options — robot_init_xy moves the robot out of
-    # the camera's field of view, so we use the default robot position.
     obs, _ = env.reset(options={"obj_init_options": {"episode_id": ep_id}})
     return env, obs, control_mode
 
