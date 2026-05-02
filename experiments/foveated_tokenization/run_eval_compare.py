@@ -128,6 +128,8 @@ def _build_env(task_cfg: dict, ep_id: int):
                 build_kwargs["rgb_overlay_cameras"] = task_cfg.get(
                     "rgb_overlay_cameras", ["3rd_view_camera"]
                 )
+                # rgb_overlay needs segmentation info to mask objects
+                build_kwargs["camera_cfgs"] = {"add_segmentation": True}
                 print(f"[env] rgb_overlay: {candidate}")
                 break
         else:
