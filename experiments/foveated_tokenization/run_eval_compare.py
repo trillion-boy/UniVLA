@@ -61,7 +61,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
         "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_variation_mode": "episode",
-        "obj_episode_range": [0, 3],
+        "obj_episode_range": [0, 24],
         "obs_camera_name": "3rd_view_camera",
         "control_freq": 3,
         "sim_freq": 513,
@@ -74,7 +74,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
         "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_variation_mode": "episode",
-        "obj_episode_range": [0, 3],
+        "obj_episode_range": [0, 24],
         "obs_camera_name": "3rd_view_camera",
         "control_freq": 3,
         "sim_freq": 513,
@@ -87,7 +87,7 @@ TASK_CONFIGS: Dict[str, dict] = {
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
         "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_variation_mode": "episode",
-        "obj_episode_range": [0, 3],
+        "obj_episode_range": [0, 24],
         "obs_camera_name": "3rd_view_camera",
         "control_freq": 3,
         "sim_freq": 513,
@@ -231,7 +231,9 @@ def evaluate_model(
 
     var_mode = task_cfg["obj_variation_mode"]
     if var_mode == "episode":
-        ep_ids = list(range(*task_cfg["obj_episode_range"]))
+        base_ids = list(range(*task_cfg["obj_episode_range"]))
+        # Cycle through base IDs to fill n_episodes
+        ep_ids = [base_ids[i % len(base_ids)] for i in range(n_episodes)]
     else:
         ep_ids = list(range(n_episodes))
 
