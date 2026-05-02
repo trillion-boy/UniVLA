@@ -50,14 +50,22 @@ from emu3.mllm import Emu3MoEConfig, Emu3MoE, Emu3Tokenizer  # noqa: E402
 def _patch_dataset_vision_hub(vision_hub: str) -> None:
     """
     Emu3SFTDataset hardcodes vision_hub to /share/project/... when raw_image=True.
-    Monkey-patch the __init__ to use the provided path instead.
+    Fix: temporarily set raw_image=False so original_init skips the hardcoded
+    path, then manually set up image_processor/tokenizer with the correct path.
     """
     import datasets as ds_module
     original_init = ds_module.Emu3SFTDataset.__init__
 
     def patched_init(self, args, tokenizer):
+        # Temporarily disable raw_image so original_init skips hardcoded path
+        original_raw_image = args.raw_image
+        args.raw_image = False
         original_init(self, args, tokenizer)
-        if getattr(self, "raw_image", False):
+        args.raw_image = original_raw_image
+
+        # Manually set up raw_image with correct vision_hub
+        if original_raw_image:
+            self.raw_image = True
             self.vision_hub = vision_hub
             self.image_processor = AutoImageProcessor.from_pretrained(
                 vision_hub, trust_remote_code=True
@@ -66,7 +74,7 @@ def _patch_dataset_vision_hub(vision_hub: str) -> None:
                 vision_hub, trust_remote_code=True
             )
             self.image_processor.min_pixels = 80 * 80
-            print(f"[patch] vision_hub overridden → {vision_hub}")
+            print(f"[patch] vision_hub set → {vision_hub}")
 
     ds_module.Emu3SFTDataset.__init__ = patched_init
 
