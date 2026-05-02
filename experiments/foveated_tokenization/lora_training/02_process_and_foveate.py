@@ -52,7 +52,8 @@ from experiments.foveated_tokenization.foveated_tokenization import (  # noqa: E
 )
 from experiments.foveated_tokenization.grounding_dino_wrapper import GroundingDINOWrapper  # noqa: E402
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"   # CPU only for TFDS processing
+# TF가 GPU를 점유하지 않도록 CPU only 설정 (DINO는 GPU 사용 가능하게 유지)
+tf.config.set_visible_devices([], 'GPU')
 
 
 # ── Bridge action utilities (from tools/utils.py) ─────────────────────────────
