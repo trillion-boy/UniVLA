@@ -216,7 +216,7 @@ def main():
         save_strategy="epoch",
         save_total_limit=2,
         remove_unused_columns=False,
-        dataloader_num_workers=2,
+        dataloader_num_workers=0,  # 0 = main process only (avoids CUDA fork deadlock with raw_image)
         report_to=[],
     )
 
