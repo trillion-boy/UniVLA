@@ -98,7 +98,9 @@ class EmuVLAInference:
         self.vision_hub = vision_hub
         self.device = device
         self.policy_setup = policy_setup
-        self._fast_path_override = fast_path
+        # Only set if not already set by a subclass __init__ (called before super())
+        if not hasattr(self, "_fast_path_override"):
+            self._fast_path_override = fast_path
 
         if self.policy_setup == "google_robot":
             self.close_gripper_act = -1
@@ -459,16 +461,19 @@ class FoveatedEmuVLAInference(EmuVLAInference):
             self.image_processor, self.image_tokenizer, self.tokenizer
         )
 
-        base = self._fast_path_override or "/share/project/yuqi.wang/UniVLA/pretrain"
+        _fast_base = self._fast_path_override or "/share/project/yuqi.wang/UniVLA/pretrain"
         if self.policy_setup == "widowx_bridge":
-            fast_path = os.path.join(base, "fast_bridge_t5_s50")
+            fast_path = os.path.join(_fast_base, "fast_bridge_t5_s50")
         elif self.policy_setup == "google_robot":
-            fast_path = os.path.join(base, "fast_google_a5_s50")
+            fast_path = os.path.join(_fast_base, "fast_google_a5_s50")
         else:
-            fast_path = os.path.join(base, "fast")
-        self.action_tokenizer = AutoProcessor.from_pretrained(
-            fast_path, trust_remote_code=True
-        )
+            fast_path = os.path.join(_fast_base, "fast")
+        if os.path.isdir(fast_path):
+            self.action_tokenizer = AutoProcessor.from_pretrained(
+                fast_path, trust_remote_code=True
+            )
+        else:
+            self.action_tokenizer = None  # caller must set before step()
 
         self.rgb_list = []
         self.hand_rgb_list = []
