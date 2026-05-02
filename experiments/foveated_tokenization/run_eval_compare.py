@@ -456,14 +456,15 @@ def main():
     print("=" * 60)
     for name, r in all_results["results"].items():
         print(
-            f"  {name:12s}: {r['success_rate']:.1%}  "
+            f"  {name:14s}: {r['success_rate']:.1%}  "
             f"(avg {r['avg_steps']:.0f} steps, {r['avg_time']:.1f}s/ep)"
         )
-    if len(all_results["results"]) == 2:
-        baseline_sr = all_results["results"]["baseline"]["success_rate"]
-        foveated_sr = all_results["results"]["foveated"]["success_rate"]
-        delta = foveated_sr - baseline_sr
-        print(f"\n  Delta (foveated - baseline): {delta:+.1%}")
+    baseline_sr = all_results["results"].get("baseline", {}).get("success_rate")
+    if baseline_sr is not None:
+        for name in ("foveated", "token_fovea"):
+            if name in all_results["results"]:
+                delta = all_results["results"][name]["success_rate"] - baseline_sr
+                print(f"\n  Delta ({name} - baseline): {delta:+.1%}")
 
     print(f"\nResults saved to: {out_path}")
 
