@@ -329,6 +329,10 @@ def main():
         help="Run only true foveated model (center crop upscale + peripheral context)"
     )
     parser.add_argument(
+        "--dual-fovea-only", action="store_true",
+        help="Run only dual-object true foveated model (crops around midpoint of src+dst objects)"
+    )
+    parser.add_argument(
         "--crop-fraction", type=float, default=0.5,
         help="Center crop size as fraction of image dimension (default 0.5 = 2x resolution)"
     )
@@ -471,7 +475,7 @@ def main():
             torch.cuda.empty_cache()
 
     # ── True Foveated ─────────────────────────────────────────────────────────
-    if args.true_fovea_only or (not args.baseline_only and not args.foveated_only and not args.token_fovea_only):
+    if args.true_fovea_only or (not args.baseline_only and not args.foveated_only and not args.token_fovea_only and not args.dual_fovea_only):
         print("\n" + "=" * 60)
         print(f"  True-Foveated EmuVLA (crop={args.crop_fraction}, fovea={args.fovea_fraction})")
         print("=" * 60)
@@ -506,6 +510,45 @@ def main():
         )
         del true_foveated
 
+    # ── Dual-Object True Foveated ─────────────────────────────────────────────
+    if args.dual_fovea_only or (not args.baseline_only and not args.foveated_only and not args.token_fovea_only and not args.true_fovea_only):
+        print("\n" + "=" * 60)
+        print(f"  Dual-Obj True-Foveated EmuVLA (crop={args.crop_fraction}, fovea={args.fovea_fraction})")
+        print("=" * 60)
+        from foveated_inference import TrueFoveatedDualObjEmuVLAInference
+
+        dual_foveated = TrueFoveatedDualObjEmuVLAInference(
+            emu_hub=args.emu_hub,
+            vq_hub=args.vq_hub,
+            vision_hub=args.vision_hub,
+            device=args.device,
+            policy_setup=args.policy_setup,
+            fast_path=args.fast_path,
+            dino_model=args.dino_model,
+            dino_cache_steps=args.dino_cache_steps,
+            box_threshold=args.box_threshold,
+            text_threshold=args.text_threshold,
+            crop_fraction=args.crop_fraction,
+            fovea_fraction=args.fovea_fraction,
+            dino_debug_dir=args.dino_debug_dir,
+        )
+
+        dual_fovea_result = evaluate_model(
+            dual_foveated, task_cfg, args.n_episodes,
+            model_name="dual_fovea",
+            video_dir=args.output_dir if args.save_video else None,
+        )
+        all_results["results"]["dual_fovea"] = dual_fovea_result
+        print(
+            f"\nDual-Obj Foveated success rate: "
+            f"{dual_fovea_result['success_rate']:.1%} "
+            f"({dual_fovea_result['n_episodes']} eps)"
+        )
+        del dual_foveated
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     # ── Save + print summary ───────────────────────────────────────────────────
     out_path = os.path.join(args.output_dir, f"results_{args.task}.json")
     with open(out_path, "w") as f:
@@ -521,7 +564,7 @@ def main():
         )
     baseline_sr = all_results["results"].get("baseline", {}).get("success_rate")
     if baseline_sr is not None:
-        for name in ("foveated", "token_fovea", "true_fovea"):
+        for name in ("foveated", "token_fovea", "true_fovea", "dual_fovea"):
             if name in all_results["results"]:
                 delta = all_results["results"][name]["success_rate"] - baseline_sr
                 print(f"\n  Delta ({name} - baseline): {delta:+.1%}")

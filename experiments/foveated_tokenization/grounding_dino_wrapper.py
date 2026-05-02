@@ -227,6 +227,83 @@ class GroundingDINOWrapper:
         self._cache_step += 1
         return cx, cy
 
+    @staticmethod
+    def extract_source_dest_nouns(instruction: str) -> Tuple[str, Optional[str]]:
+        """
+        Parse instruction into (source_noun, dest_noun).
+        Returns dest_noun=None when no clear destination is found.
+        Examples:
+            "stack the green block on the yellow block" → ("green block", "yellow block")
+            "put the eggplant in the basket"            → ("eggplant", "basket")
+            "pick up the spoon"                         → ("spoon", None)
+        """
+        instr = instruction.lower().strip()
+
+        # Patterns that capture both source and destination
+        biobj_patterns = [
+            r"(?:stack|put|place|move|transfer)\s+(?:the\s+)?(.+?)\s+(?:in|on|into|onto|to)\s+(?:the\s+)?(.+?)(?:\s*$|\s+and\s)",
+        ]
+        for pat in biobj_patterns:
+            m = re.search(pat, instr)
+            if m:
+                src = m.group(1).strip().rstrip(".,")
+                dst = m.group(2).strip().rstrip(".,")
+                return src, dst
+
+        # Fallback: only source
+        src = GroundingDINOWrapper.extract_target_noun(instruction)
+        return src, None
+
+    def get_dual_object_center(
+        self,
+        image_rgb: np.ndarray,
+        instruction: str,
+    ) -> Tuple[int, int]:
+        """
+        Detect source AND destination objects; return their pixel midpoint.
+        Falls back to single-object center when dest is not parseable or not detected.
+        Cached for cache_steps like get_fovea_center.
+        """
+        H, W = image_rgb.shape[:2]
+
+        if (
+            self._cache_cx is not None
+            and self._cache_step % self.cache_steps != 0
+        ):
+            self._cache_step += 1
+            return int(self._cache_cx), int(self._cache_cy)
+
+        src_noun, dst_noun = self.extract_source_dest_nouns(instruction)
+
+        try:
+            src_pt = self.detect(image_rgb, src_noun)
+        except Exception as e:
+            print(f"[DINO] src detection error: {e}")
+            src_pt = None
+
+        dst_pt = None
+        if dst_noun:
+            try:
+                dst_pt = self.detect(image_rgb, dst_noun)
+            except Exception as e:
+                print(f"[DINO] dst detection error: {e}")
+
+        if src_pt is not None and dst_pt is not None:
+            cx = int((src_pt[0] + dst_pt[0]) / 2)
+            cy = int((src_pt[1] + dst_pt[1]) / 2)
+            print(f"[DINO] dual obj: src='{src_noun}' @ {src_pt}, dst='{dst_noun}' @ {dst_pt} → mid=({cx},{cy})")
+        elif src_pt is not None:
+            cx, cy = int(src_pt[0]), int(src_pt[1])
+            print(f"[DINO] single obj: src='{src_noun}' @ ({cx},{cy}), dst not detected")
+        else:
+            cx, cy = W // 2, H // 2
+            print(f"[DINO] no detection for '{src_noun}', using image center ({cx},{cy})")
+
+        self._cache_cx = cx
+        self._cache_cy = cy
+        self._cache_step += 1
+        return cx, cy
+
     def reset(self) -> None:
         """Reset the step cache (call at the start of each episode)."""
         self._cache_cx = None

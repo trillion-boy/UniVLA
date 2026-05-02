@@ -750,3 +750,69 @@ class TrueFoveatedEmuVLAInference(EmuVLAInference):
         super().reset()
         self.dino.reset()
         self._current_instruction = ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TrueFoveatedDualObjEmuVLAInference  (midpoint of source + destination objects)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TrueFoveatedDualObjEmuVLAInference(TrueFoveatedEmuVLAInference):
+    """
+    Same as TrueFoveatedEmuVLAInference but uses the MIDPOINT of the source
+    and destination objects (both detected by DINO) as the fovea center.
+
+    This ensures both manipulation-relevant objects remain inside the crop for
+    two-object tasks like "stack green block on yellow block", where centering
+    on only the source object pushes the destination outside the crop region.
+    """
+
+    def preprocess(self, image: np.ndarray):
+        H, W = image.shape[:2]
+        if self._current_instruction:
+            cx, cy = self.dino.get_dual_object_center(image, self._current_instruction)
+        else:
+            cx, cy = W // 2, H // 2
+
+        # ── 1. Full image → peripheral tokens ─────────────────────────────────
+        full_view = Image.fromarray(image).resize(self.image_size)
+        full_x = self.image_processor(full_view, return_tensors="pt")[
+            "pixel_values"
+        ].cuda()
+        full_tokens = self.image_tokenizer.encode(full_x)  # (1, H_t, W_t)
+
+        # ── 2. Center crop around midpoint → upscale → high-res tokens ────────
+        half_h = int(H * self._crop_fraction / 2)
+        half_w = int(W * self._crop_fraction / 2)
+        x1 = max(0, cx - half_w);  x2 = min(W, cx + half_w)
+        y1 = max(0, cy - half_h);  y2 = min(H, cy + half_h)
+
+        crop = image[y1:y2, x1:x2]
+        crop_view = Image.fromarray(crop).resize(self.image_size)
+        crop_x = self.image_processor(crop_view, return_tensors="pt")[
+            "pixel_values"
+        ].cuda()
+        center_tokens = self.image_tokenizer.encode(crop_x)  # (1, H_t, W_t)
+
+        # ── 3. Combine ─────────────────────────────────────────────────────────
+        H_t, W_t = full_tokens.shape[-2], full_tokens.shape[-1]
+
+        cx_t = cx * W_t / W
+        cy_t = cy * H_t / H
+
+        y_idx = torch.arange(H_t, dtype=torch.float32)
+        x_idx = torch.arange(W_t, dtype=torch.float32)
+        yy, xx = torch.meshgrid(y_idx, x_idx, indexing="ij")
+        dist = torch.sqrt((xx - cx_t) ** 2 + (yy - cy_t) ** 2)
+        fovea_mask = dist <= min(H_t, W_t) * self._fovea_fraction
+
+        ys, xs = torch.where(fovea_mask)
+        px = xs.float() * W / W_t
+        py = ys.float() * H / H_t
+        cx_crop = ((px - x1) / (x2 - x1) * W_t).long()
+        cy_crop = ((py - y1) / (y2 - y1) * H_t).long()
+        valid = (cx_crop >= 0) & (cx_crop < W_t) & (cy_crop >= 0) & (cy_crop < H_t)
+
+        combined = full_tokens.clone()
+        combined[0, ys[valid], xs[valid]] = center_tokens[0, cy_crop[valid], cx_crop[valid]]
+
+        return combined, None
