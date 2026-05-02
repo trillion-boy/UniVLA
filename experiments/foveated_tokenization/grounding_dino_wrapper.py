@@ -109,20 +109,37 @@ class GroundingDINOWrapper:
             outputs = self._model(**inputs)
 
         target_sizes = torch.tensor([pil_img.size[::-1]])  # (H, W)
-        # transformers <= 4.44: box_threshold / text_threshold
-        # transformers >= 4.45: threshold (통합)
+        # First pass with threshold=0.0 to see raw best score for debugging
+        try:
+            all_results = self._processor.post_process_grounded_object_detection(
+                outputs, inputs.input_ids,
+                box_threshold=0.0, text_threshold=0.0,
+                target_sizes=target_sizes,
+            )[0]
+        except TypeError:
+            all_results = self._processor.post_process_grounded_object_detection(
+                outputs, inputs.input_ids,
+                threshold=0.0, target_sizes=target_sizes,
+            )[0]
+
+        if len(all_results["boxes"]) > 0:
+            best_raw = all_results["scores"].max().item()
+            print(f"[DINO] Best raw score={best_raw:.3f} (threshold={self.box_threshold})")
+        else:
+            print("[DINO] No boxes at all from model.")
+            return None
+
+        # Second pass with actual threshold
         try:
             results = self._processor.post_process_grounded_object_detection(
-                outputs,
-                inputs.input_ids,
+                outputs, inputs.input_ids,
                 box_threshold=self.box_threshold,
                 text_threshold=self.text_threshold,
                 target_sizes=target_sizes,
             )[0]
         except TypeError:
             results = self._processor.post_process_grounded_object_detection(
-                outputs,
-                inputs.input_ids,
+                outputs, inputs.input_ids,
                 threshold=self.box_threshold,
                 target_sizes=target_sizes,
             )[0]

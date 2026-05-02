@@ -22,7 +22,7 @@ import json
 import os
 import sys
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -139,6 +139,7 @@ def run_single_episode(
     robot_y: float,
     robot_quat: list,
     ep_id: int,
+    video_path: Optional[str] = None,
 ) -> Dict:
     """Run one episode with `model`. Returns a result dict."""
     cam_name = task_cfg["obs_camera_name"]
@@ -151,6 +152,10 @@ def run_single_episode(
     model.reset()
     if hasattr(model, "set_instruction"):
         model.set_instruction(instruction)
+
+    frames: List[np.ndarray] = []
+    if video_path:
+        frames.append(image.copy())
 
     done = False
     truncated = False
@@ -168,6 +173,8 @@ def run_single_episode(
                 ])
             )
             image = _get_image(env, obs, cam_name)
+            if video_path and step % 4 == 0:  # save every 4 steps to keep GIF small
+                frames.append(image.copy())
 
             # Long-horizon task: check subtask transitions
             is_final = env.is_final_subtask()
@@ -184,6 +191,15 @@ def run_single_episode(
 
     elapsed = time.time() - t0
     env.close()
+
+    if video_path and frames:
+        try:
+            import imageio
+            imageio.mimsave(video_path, frames, fps=10)
+            print(f"    Video saved: {video_path}")
+        except Exception as e:
+            print(f"    Video save failed: {e}")
+
     return {
         "success": bool(done),
         "steps": step,
@@ -192,7 +208,10 @@ def run_single_episode(
     }
 
 
-def evaluate_model(model, task_cfg: dict, n_episodes: int) -> Dict:
+def evaluate_model(
+    model, task_cfg: dict, n_episodes: int,
+    model_name: str = "model", video_dir: Optional[str] = None,
+) -> Dict:
     """Evaluate `model` for up to n_episodes and aggregate results."""
     results: List[Dict] = []
     ep_count = 0
@@ -209,8 +228,12 @@ def evaluate_model(model, task_cfg: dict, n_episodes: int) -> Dict:
                 for ep_id in ep_ids:
                     if ep_count >= n_episodes:
                         break
+                    vpath = None
+                    if video_dir:
+                        vpath = os.path.join(video_dir, f"{model_name}_ep{ep_count:02d}.gif")
                     r = run_single_episode(
-                        model, task_cfg, robot_x, robot_y, robot_quat, ep_id
+                        model, task_cfg, robot_x, robot_y, robot_quat, ep_id,
+                        video_path=vpath,
                     )
                     results.append(r)
                     status = "SUCCESS" if r["success"] else "FAIL"
@@ -258,8 +281,8 @@ def main():
         help="HuggingFace model ID for Grounding DINO"
     )
     parser.add_argument("--dino-cache-steps", type=int, default=5)
-    parser.add_argument("--box-threshold", type=float, default=0.3)
-    parser.add_argument("--text-threshold", type=float, default=0.25)
+    parser.add_argument("--box-threshold", type=float, default=0.15)
+    parser.add_argument("--text-threshold", type=float, default=0.15)
     parser.add_argument("--blur-scale", type=float, default=0.06)
     # Mode flags
     parser.add_argument(
@@ -267,6 +290,10 @@ def main():
     )
     parser.add_argument(
         "--foveated-only", action="store_true", help="Run only foveated model"
+    )
+    parser.add_argument(
+        "--save-video", action="store_true",
+        help="Save per-episode GIF videos to output-dir"
     )
     args = parser.parse_args()
 
@@ -300,7 +327,11 @@ def main():
             fast_path=args.fast_path,
         )
 
-        baseline_result = evaluate_model(baseline, task_cfg, args.n_episodes)
+        baseline_result = evaluate_model(
+            baseline, task_cfg, args.n_episodes,
+            model_name="baseline",
+            video_dir=args.output_dir if args.save_video else None,
+        )
         all_results["results"]["baseline"] = baseline_result
         print(
             f"\nBaseline success rate: "
@@ -333,7 +364,11 @@ def main():
             blur_scale=args.blur_scale,
         )
 
-        foveated_result = evaluate_model(foveated, task_cfg, args.n_episodes)
+        foveated_result = evaluate_model(
+            foveated, task_cfg, args.n_episodes,
+            model_name="foveated",
+            video_dir=args.output_dir if args.save_video else None,
+        )
         all_results["results"]["foveated"] = foveated_result
         print(
             f"\nFoveated success rate: "
