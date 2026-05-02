@@ -296,19 +296,8 @@ def main():
             vision_hub=args.vision_hub,
             device=args.device,
             policy_setup=args.policy_setup,
+            fast_path=args.fast_path,
         )
-        # fast-path override
-        if args.fast_path:
-            from transformers import AutoProcessor
-            pfx = (
-                "fast_bridge_t5_s50" if args.policy_setup == "widowx_bridge"
-                else "fast_google_a5_s50"
-            )
-            fp = os.path.join(args.fast_path, pfx)
-            if os.path.exists(fp):
-                baseline.action_tokenizer = AutoProcessor.from_pretrained(
-                    fp, trust_remote_code=True
-                )
 
         baseline_result = evaluate_model(baseline, task_cfg, args.n_episodes)
         all_results["results"]["baseline"] = baseline_result

@@ -91,12 +91,14 @@ class EmuVLAInference:
         vision_hub: str,
         device: str,
         policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
     ):
         self.emu_hub = emu_hub
         self.vq_hub = vq_hub
         self.vision_hub = vision_hub
         self.device = device
         self.policy_setup = policy_setup
+        self._fast_path_override = fast_path
 
         if self.policy_setup == "google_robot":
             self.close_gripper_act = -1
@@ -173,16 +175,21 @@ class EmuVLAInference:
             self.image_processor, self.image_tokenizer, self.tokenizer
         )
 
-        # fast tokenization path
+        # fast tokenization path — use override if provided, else try default location
+        _fast_base = getattr(self, "_fast_path_override", None) or \
+            "/share/project/yuqi.wang/UniVLA/pretrain"
         if self.policy_setup == "widowx_bridge":
-            fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast_bridge_t5_s50"
+            fast_path = os.path.join(_fast_base, "fast_bridge_t5_s50")
         elif self.policy_setup == "google_robot":
-            fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast_google_a5_s50"
+            fast_path = os.path.join(_fast_base, "fast_google_a5_s50")
         else:
-            fast_path = "/share/project/yuqi.wang/UniVLA/pretrain/fast"
-        self.action_tokenizer = AutoProcessor.from_pretrained(
-            fast_path, trust_remote_code=True
-        )
+            fast_path = os.path.join(_fast_base, "fast")
+        if os.path.isdir(fast_path):
+            self.action_tokenizer = AutoProcessor.from_pretrained(
+                fast_path, trust_remote_code=True
+            )
+        else:
+            self.action_tokenizer = None  # caller must set this before step()
 
         self.rgb_list = []
         self.hand_rgb_list = []
