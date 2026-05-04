@@ -1049,27 +1049,60 @@ class SaccadeStateMachine:
         self,
         source_noun: str = "",
         dest_noun:   str = "",
-        close_thresh: float = 0.5,    # gripper_norm ≥ this → PLACE phase
+        close_thresh: float = 0.5,       # gripper_norm ≥ this → "closed"
+        min_grasp_steps: int = 15,       # must stay in GRASP ≥ N steps before saccade
+        consecutive_close_required: int = 3,  # gripper closed for K consecutive steps
     ):
         self.source_noun  = source_noun
         self.dest_noun    = dest_noun
         self.close_thresh = close_thresh
-        self._state       = self.GRASP
+        self.min_grasp_steps          = min_grasp_steps
+        self.consecutive_close_required = consecutive_close_required
+        self._state        = self.GRASP
+        self._grasp_steps  = 0   # steps spent in current GRASP phase
+        self._close_count  = 0   # consecutive closed-gripper steps
 
     def update(self, gripper_norm: float) -> bool:
         """
         Update phase from gripper value.
-        Returns True if a phase transition just occurred (saccade fired).
+        Returns True only when a genuine phase transition occurs.
+
+        GRASP → PLACE requires BOTH:
+          1. _grasp_steps >= min_grasp_steps  (robot had time to approach)
+          2. gripper closed for consecutive_close_required steps in a row
+             (rules out single-step noise outputs)
+        PLACE → GRASP fires immediately when gripper opens (drop/fail).
         """
-        prev = self._state
-        self._state = (
-            self.PLACE if gripper_norm >= self.close_thresh else self.GRASP
-        )
-        if prev != self._state:
-            print(f"[Saccade] {prev} → {self._state}  "
-                  f"(gripper={gripper_norm:.2f})")
-            return True
-        return False
+        transitioned = False
+
+        if self._state == self.GRASP:
+            self._grasp_steps += 1
+            if gripper_norm >= self.close_thresh:
+                self._close_count += 1
+            else:
+                self._close_count = 0
+
+            ready = (
+                self._grasp_steps >= self.min_grasp_steps
+                and self._close_count >= self.consecutive_close_required
+            )
+            if ready:
+                self._state       = self.PLACE
+                self._grasp_steps = 0
+                self._close_count = 0
+                transitioned      = True
+                print(f"[Saccade] grasp → place  (gripper={gripper_norm:.2f}, "
+                      f"after {self.min_grasp_steps}+ grasp steps)")
+
+        else:  # PLACE phase
+            if gripper_norm < self.close_thresh:
+                self._state       = self.GRASP
+                self._grasp_steps = 0
+                self._close_count = 0
+                transitioned      = True
+                print(f"[Saccade] place → grasp  (gripper={gripper_norm:.2f})")
+
+        return transitioned
 
     @property
     def state(self) -> str:
@@ -1083,10 +1116,13 @@ class SaccadeStateMachine:
         return self.source_noun
 
     def reset(self) -> None:
-        self._state = self.GRASP
+        self._state       = self.GRASP
+        self._grasp_steps = 0
+        self._close_count = 0
 
     def __repr__(self) -> str:
         return (f"SaccadeStateMachine(state={self._state}, "
+                f"grasp_steps={self._grasp_steps}, close_count={self._close_count}, "
                 f"src='{self.source_noun}', dst='{self.dest_noun}')")
 
 
@@ -1390,11 +1426,13 @@ class TokenSaccadeEmuVLAInference(EmuVLAInference):
         dino_cache_steps: int = 5,
         box_threshold: float = 0.15,
         text_threshold: float = 0.15,
-        near_pool: int = 3,       # neighbourhood size for near-periphery pooling
-        far_pool: int = 7,        # neighbourhood size for far-periphery pooling
-        near_expand: int = 2,     # token-margin around fovea bbox
-        bbox_margin: int = 2,     # token-margin when converting bbox → mask
+        near_pool: int = 3,
+        far_pool: int = 7,
+        near_expand: int = 2,
+        bbox_margin: int = 2,
         close_thresh: float = 0.5,
+        min_grasp_steps: int = 15,           # min steps in GRASP before saccade
+        consecutive_close_required: int = 3, # gripper closed K steps in a row
         dino_debug_dir: Optional[str] = None,
     ):
         self._fast_path_override  = fast_path
@@ -1412,7 +1450,11 @@ class TokenSaccadeEmuVLAInference(EmuVLAInference):
             cache_steps=dino_cache_steps,
             debug_dir=dino_debug_dir,
         )
-        self.saccade = SaccadeStateMachine(close_thresh=close_thresh)
+        self.saccade = SaccadeStateMachine(
+            close_thresh=close_thresh,
+            min_grasp_steps=min_grasp_steps,
+            consecutive_close_required=consecutive_close_required,
+        )
 
         self._bbox_cache: Optional[Tuple[int, int, int, int]] = None
         self._cache_step: int  = 0

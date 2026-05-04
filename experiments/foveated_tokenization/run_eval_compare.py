@@ -352,6 +352,10 @@ def main():
         help="Token saccade: near-periphery pooling kernel (default 3)")
     parser.add_argument("--far-pool", type=int, default=7,
         help="Token saccade: far-periphery pooling kernel (default 7)")
+    parser.add_argument("--min-grasp-steps", type=int, default=15,
+        help="Token saccade: min steps in GRASP phase before saccade fires (default 15)")
+    parser.add_argument("--consecutive-close", type=int, default=3,
+        help="Token saccade: gripper must be closed for N consecutive steps (default 3)")
     parser.add_argument("--blur-ksize", type=int, default=61,
         help="Gaussian kernel size for background blur in saccade mode (default 61)")
     parser.add_argument("--mask-ksize", type=int, default=41,
@@ -667,7 +671,8 @@ def main():
     if args.token_saccade_only or not any_only:
         print("\n" + "=" * 60)
         print(f"  Token-Saccade EmuVLA "
-              f"(near_pool={args.near_pool}, far_pool={args.far_pool})")
+              f"(near_pool={args.near_pool}, far_pool={args.far_pool}, "
+              f"min_grasp={args.min_grasp_steps}, consec_close={args.consecutive_close})")
         print("=" * 60)
         from foveated_inference import TokenSaccadeEmuVLAInference
 
@@ -684,6 +689,8 @@ def main():
             text_threshold=args.text_threshold,
             near_pool=args.near_pool,
             far_pool=args.far_pool,
+            min_grasp_steps=args.min_grasp_steps,
+            consecutive_close_required=args.consecutive_close,
             dino_debug_dir=args.dino_debug_dir,
         )
 
