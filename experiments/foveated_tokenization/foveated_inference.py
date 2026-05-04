@@ -816,3 +816,146 @@ class TrueFoveatedDualObjEmuVLAInference(TrueFoveatedEmuVLAInference):
         combined[0, ys[valid], xs[valid]] = center_tokens[0, cy_crop[valid], cx_crop[valid]]
 
         return combined, None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BASSEmuVLAInference  (Möbius warp — single coherent warped image to VQ-VAE)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class BASSEmuVLAInference(EmuVLAInference):
+    """
+    Bio-inspired Adaptive Stereographic Sampling (BASS) VLA inference.
+
+    Key difference from TrueFoveated
+    ---------------------------------
+    TrueFoveated mixes tokens from TWO images (crop + full) → OOD artefact.
+    BASS warps ONE image via a Möbius transformation and feeds the warped
+    image directly to VQ-VAE → no token mixing, no distribution shift.
+
+    Pipeline per step
+    -----------------
+    1. DINO detects source object (and destination if two-object task)
+    2. DualFocusOptimizer → midpoint pole + reduced strength (both visible)
+    3. PhaseAwareMagnification → adjust strength based on gripper state
+    4. MobiusWarpModule.warp() → single warped image (pole region magnified)
+    5. VQ-VAE encodes warped image → 1024 tokens with higher res at pole
+    """
+
+    def __init__(
+        self,
+        emu_hub: str,
+        vq_hub: str,
+        vision_hub: str,
+        device: str,
+        policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
+        dino_model: str = "IDEA-Research/grounding-dino-tiny",
+        dino_cache_steps: int = 5,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.15,
+        grasp_strength: float = 4.0,
+        move_strength: float = 2.0,
+        dual_focus: bool = True,
+        resolution_floor: float = 0.20,
+        dino_debug_dir: Optional[str] = None,
+    ):
+        self._fast_path_override = fast_path
+        self._current_instruction: str = ""
+        self._dual_focus = dual_focus
+
+        from bass_warp import MobiusWarpModule, PhaseAwareMagnification, DualFocusOptimizer
+        self.warp_module = MobiusWarpModule(resolution_floor=resolution_floor)
+        self.phase       = PhaseAwareMagnification(grasp_strength, move_strength)
+        self.dual_opt    = DualFocusOptimizer(
+            max_strength=grasp_strength,
+            min_strength=move_strength,
+        )
+        self.dino = GroundingDINOWrapper(
+            model_name=dino_model,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            device=device,
+            cache_steps=dino_cache_steps,
+            debug_dir=dino_debug_dir,
+        )
+        super().__init__(
+            emu_hub=emu_hub,
+            vq_hub=vq_hub,
+            vision_hub=vision_hub,
+            device=device,
+            policy_setup=policy_setup,
+        )
+
+    def _select_pole(self, image: np.ndarray) -> Tuple[Tuple[int, int], float]:
+        """Choose (focus_px, strength) for this frame."""
+        H, W = image.shape[:2]
+        if not self._current_instruction:
+            return (W // 2, H // 2), 1.0
+
+        if self._dual_focus:
+            src_noun, dst_noun = GroundingDINOWrapper.extract_source_dest_nouns(
+                self._current_instruction
+            )
+            src_pt, dst_pt = None, None
+            try:
+                src_pt = self.dino.detect(image, src_noun)
+            except Exception:
+                pass
+            if dst_noun:
+                try:
+                    dst_pt = self.dino.detect(image, dst_noun)
+                except Exception:
+                    pass
+
+            if src_pt and dst_pt:
+                pole_px, s = self.dual_opt.compute(
+                    (int(src_pt[0]), int(src_pt[1])),
+                    (int(dst_pt[0]), int(dst_pt[1])),
+                    W, H,
+                )
+                if self.phase.phase == "moving":
+                    s = min(s, self.phase.move_strength)
+                print(f"[BASS] dual pole={pole_px} s={s:.2f} [{self.phase.phase}]")
+                return pole_px, s
+            if src_pt:
+                pole_px = (int(src_pt[0]), int(src_pt[1]))
+                s = self.phase.strength
+                print(f"[BASS] single pole={pole_px} s={s:.2f} [{self.phase.phase}]")
+                return pole_px, s
+
+        cx, cy = self.dino.get_fovea_center(image, self._current_instruction)
+        return (cx, cy), self.phase.strength
+
+    def preprocess(self, image: np.ndarray):
+        dev = next(self.model.parameters()).device
+        focus_px, strength = self._select_pole(image)
+
+        img_t = (
+            torch.from_numpy(image).permute(2, 0, 1)
+            .float().div(255.0).unsqueeze(0).to(dev)
+        )
+        warped = self.warp_module.warp(img_t, focus_px, strength)
+
+        warped_np = (
+            warped[0].permute(1, 2, 0).cpu().clamp(0.0, 1.0).numpy() * 255.0
+        ).astype(np.uint8)
+        warped_pil = Image.fromarray(warped_np).resize(self.image_size)
+
+        warped_x = self.image_processor(warped_pil, return_tensors="pt")[
+            "pixel_values"
+        ].to(dev)
+        return self.image_tokenizer.encode(warped_x), None
+
+    def step(self, image: np.ndarray, goal: str):
+        self._current_instruction = goal
+        raw_actions, env_actions = super().step(image, goal)
+        if env_actions:
+            g = float(np.asarray(env_actions[-1].get("gripper", [1.0])).flat[0])
+            self.phase.update((1.0 - g) / 2.0)   # +1=open->0, -1=close->1
+        return raw_actions, env_actions
+
+    def reset(self) -> None:
+        super().reset()
+        self.dino.reset()
+        self._current_instruction = ""
+        self.phase.update(0.0)
