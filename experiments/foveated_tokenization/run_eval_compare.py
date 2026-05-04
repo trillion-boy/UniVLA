@@ -341,6 +341,16 @@ def main():
     parser.add_argument("--move-strength", type=float, default=2.0,
         help="BASS magnification during moving phase (default 2.0)")
     parser.add_argument(
+        "--saccade-only", action="store_true",
+        help="Run only saccade foveated-blur model (sharp bbox + blurred periphery)"
+    )
+    parser.add_argument("--blur-ksize", type=int, default=61,
+        help="Gaussian kernel size for background blur in saccade mode (default 61)")
+    parser.add_argument("--mask-ksize", type=int, default=41,
+        help="Gaussian kernel size for mask softening in saccade mode (default 41)")
+    parser.add_argument("--bbox-margin", type=float, default=0.15,
+        help="Fractional bbox expansion for saccade fovea (default 0.15)")
+    parser.add_argument(
         "--crop-fraction", type=float, default=0.5,
         help="Center crop size as fraction of image dimension (default 0.5 = 2x resolution)"
     )
@@ -373,6 +383,7 @@ def main():
     any_only = any([
         args.baseline_only, args.foveated_only, args.token_fovea_only,
         args.true_fovea_only, args.dual_fovea_only, args.bass_only,
+        args.saccade_only,
     ])
 
     # ── Baseline ───────────────────────────────────────────────────────────────
@@ -603,6 +614,47 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # ── Saccade Foveated-Blur ─────────────────────────────────────────────────
+    if args.saccade_only or not any_only:
+        print("\n" + "=" * 60)
+        print(f"  Saccade Foveated-Blur EmuVLA "
+              f"(blur={args.blur_ksize}, mask={args.mask_ksize})")
+        print("=" * 60)
+        from foveated_inference import SaccadeFoveatedEmuVLAInference
+
+        saccade_model = SaccadeFoveatedEmuVLAInference(
+            emu_hub=args.emu_hub,
+            vq_hub=args.vq_hub,
+            vision_hub=args.vision_hub,
+            device=args.device,
+            policy_setup=args.policy_setup,
+            fast_path=args.fast_path,
+            dino_model=args.dino_model,
+            dino_cache_steps=args.dino_cache_steps,
+            box_threshold=args.box_threshold,
+            text_threshold=args.text_threshold,
+            blur_ksize=args.blur_ksize,
+            mask_ksize=args.mask_ksize,
+            bbox_margin=args.bbox_margin,
+            dino_debug_dir=args.dino_debug_dir,
+        )
+
+        saccade_result = evaluate_model(
+            saccade_model, task_cfg, args.n_episodes,
+            model_name="saccade",
+            video_dir=args.output_dir if args.save_video else None,
+        )
+        all_results["results"]["saccade"] = saccade_result
+        print(
+            f"\nSaccade success rate: "
+            f"{saccade_result['success_rate']:.1%} "
+            f"({saccade_result['n_episodes']} eps)"
+        )
+        del saccade_model
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     # ── Save + print summary ───────────────────────────────────────────────────
     out_path = os.path.join(args.output_dir, f"results_{args.task}.json")
     with open(out_path, "w") as f:
@@ -618,7 +670,7 @@ def main():
         )
     baseline_sr = all_results["results"].get("baseline", {}).get("success_rate")
     if baseline_sr is not None:
-        for name in ("foveated", "token_fovea", "true_fovea", "dual_fovea", "bass"):
+        for name in ("foveated", "token_fovea", "true_fovea", "dual_fovea", "bass", "saccade"):
             if name in all_results["results"]:
                 delta = all_results["results"][name]["success_rate"] - baseline_sr
                 print(f"\n  Delta ({name} - baseline): {delta:+.1%}")

@@ -959,3 +959,301 @@ class BASSEmuVLAInference(EmuVLAInference):
         self.dino.reset()
         self._current_instruction = ""
         self.phase.update(0.0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Foveated-Blur utility
+# ══════════════════════════════════════════════════════════════════════════════
+
+def apply_foveated_blur(
+    image: np.ndarray,
+    bbox: Tuple[int, int, int, int],
+    blur_ksize: int = 61,
+    mask_ksize: int = 41,
+    bbox_margin: float = 0.15,
+) -> np.ndarray:
+    """
+    Blend sharp original and heavily blurred version using a soft BBox mask.
+
+    The fovea region (inside DINO bbox) stays pixel-perfect sharp.
+    The periphery gets a strong Gaussian blur → only colour / rough shape survives.
+    A second Gaussian on the mask itself gives a smooth gradient boundary so
+    the VQ-VAE never sees a hard edge discontinuity.
+
+    Args
+    ----
+    image       : uint8 HWC RGB
+    bbox        : (x1, y1, x2, y2) in pixel coordinates
+    blur_ksize  : kernel size for background blur (odd, ≥ 3)
+    mask_ksize  : kernel size for mask edge softening (odd, ≥ 3)
+    bbox_margin : fraction by which to expand bbox before masking
+
+    Returns
+    -------
+    foveated : uint8 HWC RGB (same shape as input)
+    """
+    import cv2
+
+    H, W = image.shape[:2]
+    x1, y1, x2, y2 = bbox
+
+    # ── 1. Expand bbox by margin to avoid clipping object edges ───────────────
+    mw = int((x2 - x1) * bbox_margin)
+    mh = int((y2 - y1) * bbox_margin)
+    x1 = max(0, x1 - mw);  x2 = min(W, x2 + mw)
+    y1 = max(0, y1 - mh);  y2 = min(H, y2 + mh)
+
+    # ── 2. Blurred background (strong) ────────────────────────────────────────
+    ksize = blur_ksize | 1          # ensure odd
+    blurred = cv2.GaussianBlur(image, (ksize, ksize), 0)
+
+    # ── 3. Hard binary mask: 1 inside bbox, 0 outside ─────────────────────────
+    mask = np.zeros((H, W), dtype=np.float32)
+    mask[y1:y2, x1:x2] = 1.0
+
+    # ── 4. Soften mask → smooth gradient boundary (no hard edge for VQ-VAE) ───
+    mks = mask_ksize | 1
+    mask_soft = cv2.GaussianBlur(mask, (mks, mks), 0)
+    mask_3ch  = mask_soft[:, :, np.newaxis]          # (H, W, 1) for broadcasting
+
+    # ── 5. Alpha-blend: sharp inside, blurred outside ─────────────────────────
+    foveated = (mask_3ch * image + (1.0 - mask_3ch) * blurred).astype(np.uint8)
+    return foveated
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Saccade State Machine
+# ══════════════════════════════════════════════════════════════════════════════
+
+class SaccadeStateMachine:
+    """
+    Two-phase state machine that switches the fovea target based on gripper.
+
+    GRASP phase  (gripper open):
+        Sharp region = source object (what to pick up)
+        DINO query   = source_noun  (e.g. "green block")
+
+    PLACE phase  (gripper closed):
+        Sharp region = destination  (where to put it)
+        DINO query   = dest_noun    (e.g. "yellow block")
+
+    The instant the gripper closes, the saccade fires: the blur centre jumps
+    to the destination so the model can plan the placement trajectory.
+    """
+
+    GRASP = "grasp"
+    PLACE = "place"
+
+    def __init__(
+        self,
+        source_noun: str = "",
+        dest_noun:   str = "",
+        close_thresh: float = 0.5,    # gripper_norm ≥ this → PLACE phase
+    ):
+        self.source_noun  = source_noun
+        self.dest_noun    = dest_noun
+        self.close_thresh = close_thresh
+        self._state       = self.GRASP
+
+    def update(self, gripper_norm: float) -> bool:
+        """
+        Update phase from gripper value.
+        Returns True if a phase transition just occurred (saccade fired).
+        """
+        prev = self._state
+        self._state = (
+            self.PLACE if gripper_norm >= self.close_thresh else self.GRASP
+        )
+        if prev != self._state:
+            print(f"[Saccade] {prev} → {self._state}  "
+                  f"(gripper={gripper_norm:.2f})")
+            return True
+        return False
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def current_target(self) -> str:
+        """DINO text query for the current phase."""
+        if self._state == self.PLACE and self.dest_noun:
+            return self.dest_noun
+        return self.source_noun
+
+    def reset(self) -> None:
+        self._state = self.GRASP
+
+    def __repr__(self) -> str:
+        return (f"SaccadeStateMachine(state={self._state}, "
+                f"src='{self.source_noun}', dst='{self.dest_noun}')")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SaccadeFoveatedEmuVLAInference
+# ══════════════════════════════════════════════════════════════════════════════
+
+class SaccadeFoveatedEmuVLAInference(EmuVLAInference):
+    """
+    Foveated-blur preprocessing with saccade phase switching.
+
+    Design rationale
+    ----------------
+    - Full image size / token count unchanged (zero-shot compatible).
+    - No token mixing, no crop, no coordinate-system shift.
+    - DINO bbox → soft-mask blur → single natural-looking image → VQ-VAE.
+    - The model's own attention mechanism concentrates on the sharp bbox
+      region naturally (high-frequency information = more attention weight).
+    - Gripper state drives a saccade: blur centre jumps from source object
+      to destination object the moment the gripper closes.
+
+    Parameters
+    ----------
+    blur_ksize    : Gaussian kernel size for the background (default 61).
+                    Larger = more aggressive background suppression.
+    mask_ksize    : Kernel for mask edge softening (default 41).
+                    Larger = wider gradient transition zone.
+    bbox_margin   : Fractional expansion of DINO bbox (default 0.15 = 15 %).
+    dino_cache_steps : Reuse DINO detection for N steps (speed).
+    close_thresh  : Normalised gripper value that triggers PLACE phase.
+    """
+
+    def __init__(
+        self,
+        emu_hub: str,
+        vq_hub: str,
+        vision_hub: str,
+        device: str,
+        policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
+        dino_model: str = "IDEA-Research/grounding-dino-tiny",
+        dino_cache_steps: int = 5,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.15,
+        blur_ksize: int = 61,
+        mask_ksize: int = 41,
+        bbox_margin: float = 0.15,
+        close_thresh: float = 0.5,
+        dino_debug_dir: Optional[str] = None,
+    ):
+        self._fast_path_override  = fast_path
+        self._current_instruction = ""
+        self._blur_ksize          = blur_ksize
+        self._mask_ksize          = mask_ksize
+        self._bbox_margin         = bbox_margin
+
+        # DINO wrapper (bbox detection)
+        self.dino = GroundingDINOWrapper(
+            model_name=dino_model,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            device=device,
+            cache_steps=dino_cache_steps,
+            debug_dir=dino_debug_dir,
+        )
+
+        # Saccade state machine (populated from instruction in step())
+        self.saccade = SaccadeStateMachine(close_thresh=close_thresh)
+
+        # BBox cache (reset on saccade transition)
+        self._cached_bbox: Optional[Tuple[int,int,int,int]] = None
+        self._cache_step: int = 0
+        self._cache_steps: int = dino_cache_steps
+
+        super().__init__(
+            emu_hub=emu_hub,
+            vq_hub=vq_hub,
+            vision_hub=vision_hub,
+            device=device,
+            policy_setup=policy_setup,
+        )
+
+    # ── bbox detection with N-step cache ──────────────────────────────────────
+
+    def _get_bbox(self, image: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
+        """Return cached DINO bbox or run fresh detection."""
+        target = self.saccade.current_target
+        if not target:
+            return None
+
+        # Cache hit
+        if self._cached_bbox is not None and self._cache_step % self._cache_steps != 0:
+            self._cache_step += 1
+            return self._cached_bbox
+
+        # Fresh detection
+        try:
+            bbox = self.dino.detect_bbox(image, target)
+        except Exception as e:
+            print(f"[Saccade] DINO error: {e}")
+            bbox = None
+
+        self._cached_bbox = bbox
+        self._cache_step += 1
+        return bbox
+
+    # ── preprocess ────────────────────────────────────────────────────────────
+
+    def preprocess(self, image: np.ndarray):
+        """
+        Apply foveated blur and encode.
+
+        If DINO finds the target:
+            → sharp bbox, blurred periphery
+        If DINO fails (no detection):
+            → original image unchanged (safe fallback)
+        """
+        bbox = self._get_bbox(image)
+
+        if bbox is not None:
+            foveated = apply_foveated_blur(
+                image, bbox,
+                blur_ksize=self._blur_ksize,
+                mask_ksize=self._mask_ksize,
+                bbox_margin=self._bbox_margin,
+            )
+        else:
+            # Fallback: pass original image; no information lost
+            print(f"[Saccade] No bbox for '{self.saccade.current_target}', "
+                  "using original image.")
+            foveated = image
+
+        agent_view = Image.fromarray(foveated).resize(self.image_size)
+        dev = next(self.model.parameters()).device
+        image_x = self.image_processor(agent_view, return_tensors="pt")[
+            "pixel_values"
+        ].to(dev)
+        return self.image_tokenizer.encode(image_x), None
+
+    # ── step: update instruction parse + gripper phase ────────────────────────
+
+    def step(self, image: np.ndarray, goal: str):
+        # Parse source / destination from instruction on change
+        if goal != self._current_instruction:
+            self._current_instruction = goal
+            src, dst = GroundingDINOWrapper.extract_source_dest_nouns(goal)
+            self.saccade.source_noun = src
+            self.saccade.dest_noun   = dst
+            print(f"[Saccade] Instruction parsed: src='{src}' dst='{dst}'")
+
+        raw_actions, env_actions = super().step(image, goal)
+
+        # Update saccade phase from gripper action
+        if env_actions:
+            g = float(np.asarray(env_actions[-1].get("gripper", [1.0])).flat[0])
+            gripper_norm = (1.0 - g) / 2.0    # +1=open→0, -1=close→1
+            transitioned = self.saccade.update(gripper_norm)
+            if transitioned:
+                # Saccade fired: flush bbox cache so DINO re-detects new target
+                self._cached_bbox = None
+                self._cache_step  = 0
+
+        return raw_actions, env_actions
+
+    def reset(self) -> None:
+        super().reset()
+        self.dino.reset()
+        self._current_instruction = ""
+        self._cached_bbox         = None
+        self._cache_step          = 0
+        self.saccade.reset()

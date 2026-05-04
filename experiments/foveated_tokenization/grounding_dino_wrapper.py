@@ -164,6 +164,54 @@ class GroundingDINOWrapper:
 
         return cx, cy
 
+    def detect_bbox(
+        self,
+        image_rgb: np.ndarray,
+        text_query: str,
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Run Grounding DINO and return (x1, y1, x2, y2) of highest-confidence box.
+        Returns None if no detection passes the thresholds.
+        """
+        self._load_model()
+
+        pil_img = Image.fromarray(image_rgb)
+        if not text_query.endswith("."):
+            text_query = text_query + "."
+
+        inputs = self._processor(
+            images=pil_img, text=text_query, return_tensors="pt"
+        ).to(self.device)
+
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+
+        target_sizes = torch.tensor([pil_img.size[::-1]])
+        try:
+            results = self._processor.post_process_grounded_object_detection(
+                outputs, inputs.input_ids,
+                box_threshold=self.box_threshold,
+                text_threshold=self.text_threshold,
+                target_sizes=target_sizes,
+            )[0]
+        except TypeError:
+            results = self._processor.post_process_grounded_object_detection(
+                outputs, inputs.input_ids,
+                threshold=self.box_threshold,
+                target_sizes=target_sizes,
+            )[0]
+
+        if len(results["boxes"]) == 0:
+            return None
+
+        best_idx = results["scores"].argmax().item()
+        score    = results["scores"][best_idx].item()
+        box      = results["boxes"][best_idx].cpu().numpy()
+        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        print(f"[DINO] BBox '{text_query.rstrip('.')}' score={score:.3f} "
+              f"→ [{x1},{y1},{x2},{y2}]")
+        return x1, y1, x2, y2
+
     def _save_debug_image(
         self,
         image_rgb: np.ndarray,
