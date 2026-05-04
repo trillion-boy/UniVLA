@@ -21,6 +21,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from transforms3d.euler import euler2axangle
 from transformers import (
