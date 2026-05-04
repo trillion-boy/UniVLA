@@ -1257,3 +1257,255 @@ class SaccadeFoveatedEmuVLAInference(EmuVLAInference):
         self._cached_bbox         = None
         self._cache_step          = 0
         self.saccade.reset()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Token-level Saccade helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _bbox_to_token_mask(
+    bbox: Tuple[int, int, int, int],
+    H_t: int, W_t: int,
+    H_img: int, W_img: int,
+    margin: int = 2,
+) -> torch.BoolTensor:
+    """
+    Convert pixel bbox (x1,y1,x2,y2) → boolean fovea mask on (H_t, W_t) token grid.
+
+    `margin` expands the bbox by that many tokens in each direction so the
+    object edges are never accidentally included in the peripheral zone.
+    """
+    x1, y1, x2, y2 = bbox
+    tx1 = max(0,   int(x1 * W_t / W_img) - margin)
+    ty1 = max(0,   int(y1 * H_t / H_img) - margin)
+    tx2 = min(W_t, int(x2 * W_t / W_img) + margin)
+    ty2 = min(H_t, int(y2 * H_t / H_img) + margin)
+    mask = torch.zeros(H_t, W_t, dtype=torch.bool)
+    mask[ty1:ty2, tx1:tx2] = True
+    return mask
+
+
+def _progressive_soft_mask(
+    tokens: torch.Tensor,         # (1, H_t, W_t) int64
+    fovea_mask: torch.BoolTensor, # (H_t, W_t)  True = keep sharp
+    near_pool: int = 3,
+    far_pool: int = 7,
+    near_expand: int = 2,
+) -> torch.Tensor:
+    """
+    Progressive soft-masking of peripheral tokens in discrete VQ token space.
+
+    Three zones
+    -----------
+    Fovea          — original tokens, 100% sharp.
+    Near-periphery — mode of (near_pool × near_pool) neighbourhood.
+                     Object silhouettes, coarse shapes still readable.
+    Far-periphery  — mode of (far_pool × far_pool) neighbourhood.
+                     Only dominant colour / region survives — basket "blob" visible.
+
+    All replacements are valid VQ-codebook entries → zero distribution shift.
+    The basket (or source cube) is never erased; it becomes a blurry presence,
+    enough for the model to know "yellow thing is over there."
+    """
+    H_t, W_t = tokens.shape[-2:]
+
+    # ── dilate fovea mask to define the near-periphery transition zone ─────
+    dilation_k = near_expand * 2 + 1
+    fov_f = fovea_mask.float().unsqueeze(0).unsqueeze(0)           # (1,1,H_t,W_t)
+    near_zone = (
+        F.max_pool2d(fov_f, kernel_size=dilation_k, stride=1, padding=near_expand)
+        .squeeze() > 0
+    )                                                               # fovea + margin
+    far_zone = ~near_zone
+
+    def _pool_mode(pool_k: int) -> torch.Tensor:
+        """Local mode of pool_k×pool_k neighbourhood for every token position."""
+        pad   = pool_k // 2
+        t_pad = F.pad(
+            tokens[0].float().unsqueeze(0).unsqueeze(0),
+            [pad] * 4, mode="reflect",
+        )
+        patches = t_pad.unfold(2, pool_k, 1).unfold(3, pool_k, 1)
+        flat    = patches.reshape(H_t, W_t, pool_k * pool_k).long()
+        return flat.mode(dim=-1).values                            # (H_t, W_t)
+
+    near_smooth = _pool_mode(near_pool)
+    far_smooth  = _pool_mode(far_pool)
+
+    tokens_out = tokens.clone()
+    near_periphery = near_zone & ~fovea_mask
+    tokens_out[0][near_periphery] = near_smooth[near_periphery]
+    tokens_out[0][far_zone]       = far_smooth[far_zone]
+
+    return tokens_out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TokenSaccadeEmuVLAInference
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TokenSaccadeEmuVLAInference(EmuVLAInference):
+    """
+    Token-level Saccade Attention — Zero-shot.
+
+    Strongest zero-shot pipeline: safest encoding (clean image → VQ-VAE)
+    + bbox-precision fovea + progressive soft peripheral pooling + saccade.
+
+    Phase 1 — GRASP (gripper open)
+    --------------------------------
+    DINO target : source object  (e.g. "green block")
+    Fovea zone  : source bbox tokens  → 100% original (sharp, precise)
+    Near-periph : 3×3 local-mode pool → coarse shapes preserved
+    Far-periph  : 7×7 local-mode pool → basket visible as colour blob
+    Effect      : model concentrates on cube for precise grasp;
+                  basket location is still encoded (won't be forgotten)
+
+    Phase 2 — PLACE  (gripper closes → saccade fires instantly)
+    -------------------------------------------------------------
+    DINO target : destination object  (e.g. "yellow block" / "basket")
+    Fovea zone  : destination bbox tokens → 100% original
+    Near/far    : source object area softly pooled (still present, not dominant)
+    Effect      : model attention jumps to destination;
+                  held cube visible as a blob so model knows it carries something
+
+    Key properties
+    --------------
+    ✓ VQ-VAE always sees clean unmodified pixels         (zero image-level OOD)
+    ✓ All peripheral replacements are VQ-codebook tokens (zero token-level OOD)
+    ✓ Destination NEVER disappears during Phase 1        (soft pool ≠ erase)
+    ✓ Saccade is instant: bbox cache flushed on gripper close
+    ✓ No resize / crop / token-count change              (architecture-safe)
+    """
+
+    def __init__(
+        self,
+        emu_hub: str,
+        vq_hub: str,
+        vision_hub: str,
+        device: str,
+        policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
+        dino_model: str = "IDEA-Research/grounding-dino-tiny",
+        dino_cache_steps: int = 5,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.15,
+        near_pool: int = 3,       # neighbourhood size for near-periphery pooling
+        far_pool: int = 7,        # neighbourhood size for far-periphery pooling
+        near_expand: int = 2,     # token-margin around fovea bbox
+        bbox_margin: int = 2,     # token-margin when converting bbox → mask
+        close_thresh: float = 0.5,
+        dino_debug_dir: Optional[str] = None,
+    ):
+        self._fast_path_override  = fast_path
+        self._current_instruction = ""
+        self._near_pool           = near_pool
+        self._far_pool            = far_pool
+        self._near_expand         = near_expand
+        self._bbox_margin         = bbox_margin
+
+        self.dino = GroundingDINOWrapper(
+            model_name=dino_model,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            device=device,
+            cache_steps=dino_cache_steps,
+            debug_dir=dino_debug_dir,
+        )
+        self.saccade = SaccadeStateMachine(close_thresh=close_thresh)
+
+        self._bbox_cache: Optional[Tuple[int, int, int, int]] = None
+        self._cache_step: int  = 0
+        self._cache_steps: int = dino_cache_steps
+
+        super().__init__(
+            emu_hub=emu_hub, vq_hub=vq_hub, vision_hub=vision_hub,
+            device=device, policy_setup=policy_setup,
+        )
+
+    # ── DINO bbox with N-step cache ────────────────────────────────────────
+
+    def _get_bbox(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        target = self.saccade.current_target
+        if not target:
+            return None
+        if self._bbox_cache is not None and self._cache_step % self._cache_steps != 0:
+            self._cache_step += 1
+            return self._bbox_cache
+        try:
+            bbox = self.dino.detect_bbox(image, target)
+        except Exception as e:
+            print(f"[TokenSaccade] DINO error: {e}")
+            bbox = None
+        self._bbox_cache = bbox
+        self._cache_step += 1
+        return bbox
+
+    # ── preprocess ────────────────────────────────────────────────────────
+
+    def preprocess(self, image: np.ndarray):
+        H, W  = image.shape[:2]
+        dev   = next(self.model.parameters()).device
+
+        # ── Step 1: encode clean image → tokens (no distribution shift) ───
+        agent_view = Image.fromarray(image).resize(self.image_size)
+        img_x = self.image_processor(agent_view, return_tensors="pt")[
+            "pixel_values"
+        ].to(dev)
+        tokens = self.image_tokenizer.encode(img_x)          # (1, H_t, W_t)
+        H_t, W_t = tokens.shape[-2], tokens.shape[-1]
+
+        # ── Step 2: DINO bbox → token-grid fovea mask ─────────────────────
+        bbox = self._get_bbox(image)
+        if bbox is None:
+            print(f"[TokenSaccade] No bbox for '{self.saccade.current_target}'"
+                  " — all tokens kept.")
+            return tokens, None
+
+        fovea_mask = _bbox_to_token_mask(
+            bbox, H_t, W_t, H, W, margin=self._bbox_margin
+        )
+
+        # ── Step 3: progressive soft-mask periphery ────────────────────────
+        tokens_out = _progressive_soft_mask(
+            tokens, fovea_mask,
+            near_pool=self._near_pool,
+            far_pool=self._far_pool,
+            near_expand=self._near_expand,
+        )
+
+        n_fovea = int(fovea_mask.sum())
+        print(f"[TokenSaccade] phase={self.saccade.state} "
+              f"target='{self.saccade.current_target}' "
+              f"fovea={n_fovea}/{H_t * W_t} tokens  bbox={bbox}")
+        return tokens_out, None
+
+    # ── step: sync instruction parse + gripper phase ──────────────────────
+
+    def step(self, image: np.ndarray, goal: str):
+        if goal != self._current_instruction:
+            self._current_instruction = goal
+            src, dst = GroundingDINOWrapper.extract_source_dest_nouns(goal)
+            self.saccade.source_noun = src
+            self.saccade.dest_noun   = dst
+            print(f"[TokenSaccade] Instruction → src='{src}'  dst='{dst}'")
+
+        raw_actions, env_actions = super().step(image, goal)
+
+        if env_actions:
+            g = float(np.asarray(env_actions[-1].get("gripper", [1.0])).flat[0])
+            gripper_norm = (1.0 - g) / 2.0        # +1=open→0, −1=close→1
+            transitioned = self.saccade.update(gripper_norm)
+            if transitioned:
+                # Saccade fired: flush cache → DINO re-detects new target next step
+                self._bbox_cache = None
+                self._cache_step = 0
+
+        return raw_actions, env_actions
+
+    def reset(self) -> None:
+        super().reset()
+        self.dino.reset()
+        self._current_instruction = ""
+        self._bbox_cache          = None
+        self._cache_step          = 0
+        self.saccade.reset()
