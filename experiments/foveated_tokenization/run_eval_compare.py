@@ -743,7 +743,7 @@ def main():
         fovea_saccade_result = evaluate_model(
             fovea_saccade_model, task_cfg, args.n_episodes,
             model_name="fovea_saccade",
-            save_video=args.save_video, output_dir=args.output_dir,
+            video_dir=args.output_dir if args.save_video else None,
         )
         all_results["results"]["fovea_saccade"] = fovea_saccade_result
         print(
