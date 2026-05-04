@@ -348,6 +348,10 @@ def main():
         "--token-saccade-only", action="store_true",
         help="Run only token-level saccade attention model (bbox soft-pool + saccade)"
     )
+    parser.add_argument(
+        "--fovea-saccade-only", action="store_true",
+        help="Run only TokenFovea+Saccade model (circular 50% sharp + phase saccade)"
+    )
     parser.add_argument("--near-pool", type=int, default=3,
         help="Token saccade: near-periphery pooling kernel (default 3)")
     parser.add_argument("--far-pool", type=int, default=7,
@@ -395,7 +399,7 @@ def main():
     any_only = any([
         args.baseline_only, args.foveated_only, args.token_fovea_only,
         args.true_fovea_only, args.dual_fovea_only, args.bass_only,
-        args.saccade_only, args.token_saccade_only,
+        args.saccade_only, args.token_saccade_only, args.fovea_saccade_only,
     ])
 
     # ── Baseline ───────────────────────────────────────────────────────────────
@@ -710,6 +714,48 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # ── TokenFovea + Saccade ───────────────────────────────────────────────────
+    if args.fovea_saccade_only or not any_only:
+        print("\n" + "=" * 60)
+        print(f"  TokenFovea+Saccade EmuVLA "
+              f"(fovea_fraction={args.fovea_fraction}, "
+              f"min_grasp={args.min_grasp_steps}, consec_close={args.consecutive_close})")
+        print("=" * 60)
+        from foveated_inference import TokenFoveaSaccadeEmuVLAInference
+
+        fovea_saccade_model = TokenFoveaSaccadeEmuVLAInference(
+            emu_hub=args.emu_hub,
+            vq_hub=args.vq_hub,
+            vision_hub=args.vision_hub,
+            device=args.device,
+            policy_setup=args.policy_setup,
+            fast_path=args.fast_path,
+            dino_model=args.dino_model,
+            dino_cache_steps=args.dino_cache_steps,
+            box_threshold=args.box_threshold,
+            text_threshold=args.text_threshold,
+            fovea_fraction=args.fovea_fraction,
+            min_grasp_steps=args.min_grasp_steps,
+            consecutive_close_required=args.consecutive_close,
+            dino_debug_dir=args.dino_debug_dir,
+        )
+
+        fovea_saccade_result = evaluate_model(
+            fovea_saccade_model, task_cfg, args.n_episodes,
+            model_name="fovea_saccade",
+            save_video=args.save_video, output_dir=args.output_dir,
+        )
+        all_results["results"]["fovea_saccade"] = fovea_saccade_result
+        print(
+            f"\nFovea-Saccade success rate: "
+            f"{fovea_saccade_result['success_rate']:.1%} "
+            f"({fovea_saccade_result['n_episodes']} eps)"
+        )
+        del fovea_saccade_model
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     # ── Save + print summary ───────────────────────────────────────────────────
     out_path = os.path.join(args.output_dir, f"results_{args.task}.json")
     with open(out_path, "w") as f:
@@ -726,7 +772,7 @@ def main():
     baseline_sr = all_results["results"].get("baseline", {}).get("success_rate")
     if baseline_sr is not None:
         for name in ("foveated", "token_fovea", "true_fovea", "dual_fovea",
-                     "bass", "saccade", "token_saccade"):
+                     "bass", "saccade", "token_saccade", "fovea_saccade"):
             if name in all_results["results"]:
                 delta = all_results["results"][name]["success_rate"] - baseline_sr
                 print(f"\n  Delta ({name} - baseline): {delta:+.1%}")

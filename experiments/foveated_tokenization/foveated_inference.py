@@ -632,6 +632,122 @@ class TokenFoveatedEmuVLAInference(EmuVLAInference):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TokenFoveaSaccadeEmuVLAInference
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TokenFoveaSaccadeEmuVLAInference(TokenFoveatedEmuVLAInference):
+    """
+    TokenFovea + Saccade.
+
+    Identical to TokenFoveatedEmuVLAInference (circular fovea, 50% sharp, bg_token
+    periphery) but adds a two-phase saccade:
+
+    GRASP phase  → DINO targets source object  ("green block")
+    PLACE phase  → DINO targets destination    ("yellow block")
+
+    Why this should work when TokenSaccade (bbox, 5% sharp) failed:
+    - The robot CAN grasp with 50% sharp tokens (TokenFovea shows 15%)
+    - After grasping, original TokenFovea keeps fovea on the carried green block
+      → yellow block (destination) is in the peripheral/erased zone → hard to place
+    - Saccade jumps fovea to yellow block after grasping
+      → yellow block tokens are now 100% sharp → easier to plan placement
+
+    Saccade guard (prevents premature firing):
+    - min_grasp_steps : robot must have been in GRASP phase for ≥ N steps
+    - consecutive_close_required : gripper must read as closed for K steps in a row
+    """
+
+    def __init__(
+        self,
+        emu_hub: str,
+        vq_hub: str,
+        vision_hub: str,
+        device: str,
+        policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
+        dino_model: str = "IDEA-Research/grounding-dino-tiny",
+        dino_cache_steps: int = 5,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.15,
+        fovea_fraction: float = 0.4,
+        close_thresh: float = 0.5,
+        min_grasp_steps: int = 15,
+        consecutive_close_required: int = 3,
+        dino_debug_dir: Optional[str] = None,
+    ):
+        super().__init__(
+            emu_hub=emu_hub, vq_hub=vq_hub, vision_hub=vision_hub,
+            device=device, policy_setup=policy_setup,
+            fast_path=fast_path, dino_model=dino_model,
+            dino_cache_steps=dino_cache_steps,
+            box_threshold=box_threshold, text_threshold=text_threshold,
+            fovea_fraction=fovea_fraction, dino_debug_dir=dino_debug_dir,
+        )
+        self.saccade = SaccadeStateMachine(
+            close_thresh=close_thresh,
+            min_grasp_steps=min_grasp_steps,
+            consecutive_close_required=consecutive_close_required,
+        )
+        self._src_noun: str = ""
+        self._dst_noun: str = ""
+
+    def preprocess(self, image: np.ndarray):
+        H, W = image.shape[:2]
+
+        # Pick DINO query based on saccade phase
+        target = self.saccade.current_target or self._src_noun
+        if target:
+            cx, cy = self.dino.get_fovea_center(image, target)
+        else:
+            cx, cy = W // 2, H // 2
+
+        agent_view = Image.fromarray(image).resize(self.image_size)
+        image_x = self.image_processor(agent_view, return_tensors="pt")[
+            "pixel_values"
+        ].cuda()
+        image_code = self.image_tokenizer.encode(image_x)
+        image_code = self._foveate_tokens(image_code, cx, cy, H, W)
+
+        H_t, W_t = image_code.shape[-2], image_code.shape[-1]
+        n_sharp = int(((image_code[0] != int(image_code.flatten().mode().values.item()))
+                       .sum().item()))
+        print(f"[FoveaSaccade] phase={self.saccade.state} "
+              f"target='{target}' fovea_center=({cx},{cy}) "
+              f"sharp≈{n_sharp}/{H_t * W_t}")
+        return image_code, None
+
+    def step(self, image: np.ndarray, goal: str):
+        # Parse instruction into src/dst on first call or change
+        if goal != self._current_instruction:
+            self._current_instruction = goal
+            src, dst = GroundingDINOWrapper.extract_source_dest_nouns(goal)
+            self._src_noun = src
+            self._dst_noun = dst
+            self.saccade.source_noun = src
+            self.saccade.dest_noun   = dst
+            print(f"[FoveaSaccade] Instruction → src='{src}'  dst='{dst}'")
+
+        raw_actions, env_actions = super(TokenFoveatedEmuVLAInference, self).step(
+            image, goal
+        )
+
+        if env_actions:
+            g = float(np.asarray(env_actions[-1].get("gripper", [1.0])).flat[0])
+            gripper_norm = (1.0 - g) / 2.0
+            transitioned = self.saccade.update(gripper_norm)
+            if transitioned:
+                self.dino.reset()   # flush cache so DINO re-detects new target
+
+        return raw_actions, env_actions
+
+    def reset(self) -> None:
+        super().reset()
+        self._src_noun = ""
+        self._dst_noun = ""
+        self.saccade.reset()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TrueFoveatedEmuVLAInference  (Look, Focus, Act style)
 # ══════════════════════════════════════════════════════════════════════════════
 
