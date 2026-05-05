@@ -17,8 +17,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
-import cv2
 import numpy as np
+from PIL import Image as _PILImage
+
+
+def _resize(arr: np.ndarray, w: int, h: int, interp: str = "area") -> np.ndarray:
+    """cv2-free resize using PIL. interp: 'area', 'linear', 'nearest'."""
+    resample = {"area": _PILImage.LANCZOS, "linear": _PILImage.BILINEAR,
+                "nearest": _PILImage.NEAREST}[interp]
+    return np.array(_PILImage.fromarray(arr).resize((w, h), resample=resample))
 
 PATCH_OUT = 16   # 모든 output patch 크기
 GRID      = 4    # 각 level의 grid 크기
@@ -89,7 +96,7 @@ def _extract_patch(
         )
 
     if size != out_size:
-        crop = cv2.resize(crop, (out_size, out_size), interpolation=cv2.INTER_AREA)
+        crop = _resize(crop, out_size, out_size, "area")
     return crop.astype(np.uint8)
 
 
@@ -200,8 +207,8 @@ def reconstruct_foveated_with_context(
     # 극단적 다운샘플 → 업샘플 → blurry 배경
     small_h = max(1, int(H * blur_scale))
     small_w = max(1, int(W * blur_scale))
-    small   = cv2.resize(image, (small_w, small_h), interpolation=cv2.INTER_AREA)
-    canvas  = cv2.resize(small, (W, H), interpolation=cv2.INTER_LINEAR)
+    small   = _resize(image, small_w, small_h, "area")
+    canvas  = _resize(small, W, H, "linear")
 
     # 중심부: foveated patches로 덮기 (바깥 → 안쪽 순서)
     _paste_patches(canvas, patches, W, H)
@@ -217,7 +224,7 @@ def _paste_patches(canvas: np.ndarray, patches: List[FovPatch], W: int, H: int) 
         if x1 <= 0 or y1 <= 0 or x0 >= W or y0 >= H:
             continue
 
-        up = cv2.resize(p.patch, (p.orig_size, p.orig_size), interpolation=cv2.INTER_NEAREST)
+        up = _resize(p.patch, p.orig_size, p.orig_size, "nearest")
 
         src_x0 = max(0, -x0);  src_y0 = max(0, -y0)
         src_x1 = p.orig_size - max(0, x1 - W)
