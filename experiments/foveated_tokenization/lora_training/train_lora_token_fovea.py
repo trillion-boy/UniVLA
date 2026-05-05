@@ -14,7 +14,7 @@ Usage:
     conda run -n univla python train_lora_token_fovea.py \
         --emu-hub      /content/pretrain/UNIVLA_SIMPLER_BRIDGE_VIDEO_BS128_20K \
         --vision-hub   /content/pretrain/Emu3-VisionTokenizer \
-        --fast-path    /content/UniVLA/pretrain \
+        --fast-path    /content/UniVLA/pretrain/fast_bridge_t5_s50 \
         --data-pkl     /content/bridge_token_fovea_train.pkl \
         --output-dir   /content/lora_token_fovea \
         --num-epochs   3 \
@@ -30,6 +30,12 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+# Disable TF/Keras before any transformers import to avoid:
+#   - cv2/_ARRAY_API error (keras→cv2 with NumPy 2.x)
+#   - Keras 3 / tf-keras incompatibility in transformers.trainer
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 
 import torch
 import transformers as hf
