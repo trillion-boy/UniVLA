@@ -181,7 +181,10 @@ class EmuVLAInference:
         # fast tokenization path — use override if provided, else try default location
         _fast_base = getattr(self, "_fast_path_override", None) or \
             "/share/project/yuqi.wang/UniVLA/pretrain"
-        if self.policy_setup == "widowx_bridge":
+        # If the override already points directly at the tokenizer dir, use as-is
+        if os.path.isfile(os.path.join(_fast_base, "config.json")):
+            fast_path = _fast_base
+        elif self.policy_setup == "widowx_bridge":
             fast_path = os.path.join(_fast_base, "fast_bridge_t5_s50")
         elif self.policy_setup == "google_robot":
             fast_path = os.path.join(_fast_base, "fast_google_a5_s50")
@@ -474,7 +477,9 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         )
 
         _fast_base = self._fast_path_override or "/share/project/yuqi.wang/UniVLA/pretrain"
-        if self.policy_setup == "widowx_bridge":
+        if os.path.isfile(os.path.join(_fast_base, "config.json")):
+            fast_path = _fast_base
+        elif self.policy_setup == "widowx_bridge":
             fast_path = os.path.join(_fast_base, "fast_bridge_t5_s50")
         elif self.policy_setup == "google_robot":
             fast_path = os.path.join(_fast_base, "fast_google_a5_s50")
