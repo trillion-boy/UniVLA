@@ -182,7 +182,8 @@ class EmuVLAInference:
         _fast_base = getattr(self, "_fast_path_override", None) or \
             "/share/project/yuqi.wang/UniVLA/pretrain"
         # If the override already points directly at the tokenizer dir, use as-is
-        if os.path.isfile(os.path.join(_fast_base, "config.json")):
+        _direct_marker = ("processor_config.json", "tokenizer_config.json", "config.json")
+        if any(os.path.isfile(os.path.join(_fast_base, f)) for f in _direct_marker):
             fast_path = _fast_base
         elif self.policy_setup == "widowx_bridge":
             fast_path = os.path.join(_fast_base, "fast_bridge_t5_s50")
@@ -477,7 +478,8 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         )
 
         _fast_base = self._fast_path_override or "/share/project/yuqi.wang/UniVLA/pretrain"
-        if os.path.isfile(os.path.join(_fast_base, "config.json")):
+        _direct_marker = ("processor_config.json", "tokenizer_config.json", "config.json")
+        if any(os.path.isfile(os.path.join(_fast_base, f)) for f in _direct_marker):
             fast_path = _fast_base
         elif self.policy_setup == "widowx_bridge":
             fast_path = os.path.join(_fast_base, "fast_bridge_t5_s50")
