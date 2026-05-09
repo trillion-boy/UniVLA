@@ -78,7 +78,12 @@ class Emu3Processor(ProcessorMixin):
         if hasattr(self.vision_tokenizer, "config"):
             self.vis_tok_spatial_factor = 2 ** (len(self.vision_tokenizer.config.ch_mult) - 1)
 
-        super().__init__(image_processor, tokenizer, chat_template=chat_template)
+        super().__init__(
+            image_processor=image_processor,
+            vision_tokenizer=vision_tokenizer,
+            tokenizer=tokenizer,
+            chat_template=chat_template,
+        )
         if hasattr(self.vision_tokenizer, "config"):
             self.const_helper = self.build_const_helper_video()
 
