@@ -352,6 +352,16 @@ def main():
         "--fovea-saccade-only", action="store_true",
         help="Run only TokenFovea+Saccade model (circular 50% sharp + phase saccade)"
     )
+    parser.add_argument(
+        "--latent-saccade-only", action="store_true",
+        help="Run only LatentSaccade model (embedding-level spatial weighting + saccade)"
+    )
+    parser.add_argument("--bg-weight", type=float, default=0.2,
+        help="LatentSaccade: embedding scale for background tokens (default 0.2)")
+    parser.add_argument("--place-src-weight", type=float, default=0.5,
+        help="LatentSaccade: embedding scale for source object in PLACE phase (default 0.5)")
+    parser.add_argument("--no-latent-mask", action="store_true",
+        help="LatentSaccade: disable embedding mask (ablation — pure saccade baseline)")
     parser.add_argument("--near-pool", type=int, default=3,
         help="Token saccade: near-periphery pooling kernel (default 3)")
     parser.add_argument("--far-pool", type=int, default=7,
@@ -400,6 +410,7 @@ def main():
         args.baseline_only, args.foveated_only, args.token_fovea_only,
         args.true_fovea_only, args.dual_fovea_only, args.bass_only,
         args.saccade_only, args.token_saccade_only, args.fovea_saccade_only,
+        args.latent_saccade_only,
     ])
 
     # ── Baseline ───────────────────────────────────────────────────────────────
@@ -756,6 +767,52 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # ── Latent Saccade (embedding-level) ──────────────────────────────────────
+    if args.latent_saccade_only or not any_only:
+        print("\n" + "=" * 60)
+        print(f"  LatentSaccade EmuVLA "
+              f"(bg_w={args.bg_weight}, place_src_w={args.place_src_weight}, "
+              f"min_grasp={args.min_grasp_steps}, consec_close={args.consecutive_close})")
+        print("=" * 60)
+        from foveated_inference import LatentSaccadeEmuVLAInference
+
+        latent_saccade_model = LatentSaccadeEmuVLAInference(
+            emu_hub=args.emu_hub,
+            vq_hub=args.vq_hub,
+            vision_hub=args.vision_hub,
+            device=args.device,
+            policy_setup=args.policy_setup,
+            fast_path=args.fast_path,
+            dino_model=args.dino_model,
+            dino_cache_steps=args.dino_cache_steps,
+            box_threshold=args.box_threshold,
+            text_threshold=args.text_threshold,
+            bbox_margin=2,
+            bg_weight=args.bg_weight,
+            place_src_weight=args.place_src_weight,
+            close_thresh=0.5,
+            min_grasp_steps=args.min_grasp_steps,
+            consecutive_close_required=args.consecutive_close,
+            enable_latent_mask=not args.no_latent_mask,
+            dino_debug_dir=args.dino_debug_dir,
+        )
+
+        latent_saccade_result = evaluate_model(
+            latent_saccade_model, task_cfg, args.n_episodes,
+            model_name="latent_saccade",
+            video_dir=args.output_dir if args.save_video else None,
+        )
+        all_results["results"]["latent_saccade"] = latent_saccade_result
+        print(
+            f"\nLatentSaccade success rate: "
+            f"{latent_saccade_result['success_rate']:.1%} "
+            f"({latent_saccade_result['n_episodes']} eps)"
+        )
+        del latent_saccade_model
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     # ── Save + print summary ───────────────────────────────────────────────────
     out_path = os.path.join(args.output_dir, f"results_{args.task}.json")
     with open(out_path, "w") as f:
@@ -772,7 +829,8 @@ def main():
     baseline_sr = all_results["results"].get("baseline", {}).get("success_rate")
     if baseline_sr is not None:
         for name in ("foveated", "token_fovea", "true_fovea", "dual_fovea",
-                     "bass", "saccade", "token_saccade", "fovea_saccade"):
+                     "bass", "saccade", "token_saccade", "fovea_saccade",
+                     "latent_saccade"):
             if name in all_results["results"]:
                 delta = all_results["results"][name]["success_rate"] - baseline_sr
                 print(f"\n  Delta ({name} - baseline): {delta:+.1%}")
