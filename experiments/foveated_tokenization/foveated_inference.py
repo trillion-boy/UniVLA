@@ -175,7 +175,9 @@ class EmuVLAInference:
             .eval()
         )
         self.processor = Emu3Processor(
-            self.image_processor, self.image_tokenizer, self.tokenizer
+            image_processor=self.image_processor,
+            vision_tokenizer=self.image_tokenizer,
+            tokenizer=self.tokenizer,
         )
 
         # fast tokenization path — use override if provided, else try default location
@@ -474,7 +476,9 @@ class FoveatedEmuVLAInference(EmuVLAInference):
             .eval()
         )
         self.processor = Emu3Processor(
-            self.image_processor, self.image_tokenizer, self.tokenizer
+            image_processor=self.image_processor,
+            vision_tokenizer=self.image_tokenizer,
+            tokenizer=self.tokenizer,
         )
 
         _fast_base = self._fast_path_override or "/share/project/yuqi.wang/UniVLA/pretrain"
