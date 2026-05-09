@@ -629,6 +629,8 @@ class Emu3Processor(ProcessorMixin):
         return image_tokens
 
     def build_const_helper(self):
+        def _enc(s):
+            return self.tokenizer.encode(s, add_special_tokens=False)[0]
         (
             img_token,
             eoi_token,
@@ -638,7 +640,7 @@ class Emu3Processor(ProcessorMixin):
             pad_token,
             vis_start,
             vis_end,
-        ) = self.tokenizer.encode([
+        ) = [_enc(s) for s in [
             self.tokenizer.img_token,
             self.tokenizer.eoi_token,
             self.tokenizer.eos_token,
@@ -647,7 +649,7 @@ class Emu3Processor(ProcessorMixin):
             self.tokenizer.pad_token,
             self.visual_template[0].format(token_id=0),
             self.visual_template[0].format(token_id=self.vision_tokenizer.config.codebook_size - 1),
-        ])
+        ]]
 
         const_helper = partial(
             Emu3PrefixConstrainedLogitsHelper,
@@ -666,6 +668,8 @@ class Emu3Processor(ProcessorMixin):
         return helper
     
     def build_const_helper_video(self):
+        def _enc(s):
+            return self.tokenizer.encode(s, add_special_tokens=False)[0]
         (
             img_token,
             eoi_token,
@@ -675,7 +679,7 @@ class Emu3Processor(ProcessorMixin):
             pad_token,
             vis_start,
             vis_end,
-        ) = self.tokenizer.encode([
+        ) = [_enc(s) for s in [
             self.tokenizer.img_token,
             self.tokenizer.eoi_token,
             self.tokenizer.eos_token,
@@ -684,7 +688,7 @@ class Emu3Processor(ProcessorMixin):
             self.tokenizer.pad_token,
             self.visual_template[0].format(token_id=0),
             self.visual_template[0].format(token_id=self.vision_tokenizer.config.codebook_size - 1),
-        ])
+        ]]
 
         const_helper = partial(
             Emu3PrefixConstrainedVideoLogitsHelper,
