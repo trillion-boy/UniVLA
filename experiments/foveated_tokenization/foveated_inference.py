@@ -1675,3 +1675,425 @@ class TokenSaccadeEmuVLAInference(EmuVLAInference):
         self._bbox_cache          = None
         self._cache_step          = 0
         self.saccade.reset()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LatentSaccadeEmuVLAInference  (Method 6 — embedding-level spatial attention)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LatentSaccadeEmuVLAInference(EmuVLAInference):
+    """
+    Embedding-level spatial attention with saccade phase switching.
+
+    Unlike all previous approaches (which modify either pixels or discrete VQ
+    token IDs), this class operates in the **continuous embedding space**:
+
+    Pipeline
+    --------
+    1. Image → VQ-VAE unchanged (clean pixels → zero image-level OOD)
+    2. Discrete token IDs → embed_tokens unchanged (zero token OOD)
+    3. A forward hook on embed_tokens scales the visual token embeddings
+       of the **current frame only** by a per-token spatial weight:
+         - Fovea (DINO bbox of current saccade target) → weight 1.0
+         - Secondary (PLACE phase: source in hand)     → place_src_weight (0.5)
+         - Background periphery                        → bg_weight (0.2)
+    4. Text tokens / action history / previous frame embeddings → untouched
+
+    The hook fires only on the first (full-sequence) forward call inside
+    generate(); per-step single-token calls are skipped automatically.
+
+    Saccade logic
+    -------------
+    GRASP phase (gripper open) : fovea = source object, no secondary
+    PLACE phase (gripper close): fovea = destination, secondary = source
+
+    LoRA training API
+    -----------------
+    build_masked_embeds(input_ids, weight_1d, frame_start) is a public method
+    that can be called from a custom training loop to produce spatially-weighted
+    inputs_embeds without going through generate().
+
+    Parameters
+    ----------
+    bg_weight          : Embedding scale for background tokens (0–1).
+    place_src_weight   : Embedding scale for secondary (source in PLACE phase).
+    bbox_margin        : Extra token-grid expansion around DINO bbox.
+    enable_latent_mask : Set False to disable masking (ablation baseline).
+    """
+
+    def __init__(
+        self,
+        emu_hub: str,
+        vq_hub: str,
+        vision_hub: str,
+        device: str,
+        policy_setup: str = "widowx_bridge",
+        fast_path: Optional[str] = None,
+        dino_model: str = "IDEA-Research/grounding-dino-tiny",
+        dino_cache_steps: int = 5,
+        box_threshold: float = 0.15,
+        text_threshold: float = 0.15,
+        bbox_margin: int = 2,
+        bg_weight: float = 0.2,
+        place_src_weight: float = 0.5,
+        close_thresh: float = 0.5,
+        min_grasp_steps: int = 15,
+        consecutive_close_required: int = 3,
+        enable_latent_mask: bool = True,
+        dino_debug_dir: Optional[str] = None,
+    ):
+        self._fast_path_override  = fast_path
+        self._current_instruction = ""
+        self._bg_weight           = bg_weight
+        self._place_src_weight    = place_src_weight
+        self._bbox_margin         = bbox_margin
+        self._enable_latent_mask  = enable_latent_mask
+
+        self.dino = GroundingDINOWrapper(
+            model_name=dino_model,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            device=device,
+            cache_steps=dino_cache_steps,
+            debug_dir=dino_debug_dir,
+        )
+        self.saccade = SaccadeStateMachine(
+            close_thresh=close_thresh,
+            min_grasp_steps=min_grasp_steps,
+            consecutive_close_required=consecutive_close_required,
+        )
+
+        self._fovea_bbox_cache:     Optional[Tuple] = None
+        self._secondary_bbox_cache: Optional[Tuple] = None
+        self._cache_step:  int = 0
+        self._cache_steps: int = dino_cache_steps
+
+        super().__init__(
+            emu_hub=emu_hub, vq_hub=vq_hub, vision_hub=vision_hub,
+            device=device, policy_setup=policy_setup,
+        )
+        self._setup_vis_range()
+
+    # ── Visual token ID range ──────────────────────────────────────────────
+
+    def _setup_vis_range(self) -> None:
+        """Derive VQ visual token start/end IDs from the tokenizer vocabulary."""
+        tmpl = getattr(self.processor, "visual_template", None)
+        fmt  = tmpl[0] if tmpl else "<|visual token {token_id:0>6d}|>"
+        self.vis_start = self.tokenizer.convert_tokens_to_ids(fmt.format(token_id=0))
+        self.vis_end   = self.tokenizer.convert_tokens_to_ids(fmt.format(token_id=32767))
+
+    # ── DINO detection with N-step cache ──────────────────────────────────
+
+    def _get_bboxes(
+        self, image: np.ndarray
+    ) -> Tuple[Optional[Tuple], Optional[Tuple]]:
+        """
+        Returns (fovea_bbox, secondary_bbox) both as (x1,y1,x2,y2) or None.
+
+        fovea     = current saccade target (always queried)
+        secondary = source object in PLACE phase only (GRASP phase: None)
+        """
+        use_cache = (
+            self._fovea_bbox_cache is not None
+            and self._cache_step % self._cache_steps != 0
+        )
+        if use_cache:
+            self._cache_step += 1
+            return self._fovea_bbox_cache, self._secondary_bbox_cache
+
+        target = self.saccade.current_target
+        if target:
+            try:
+                fovea_bbox = self.dino.detect_bbox(image, target)
+            except Exception as e:
+                print(f"[LatentSaccade] DINO fovea error: {e}")
+                fovea_bbox = None
+        else:
+            fovea_bbox = None
+
+        secondary_bbox = None
+        if (self.saccade.state == SaccadeStateMachine.PLACE
+                and self.saccade.source_noun):
+            try:
+                secondary_bbox = self.dino.detect_bbox(
+                    image, self.saccade.source_noun
+                )
+            except Exception as e:
+                print(f"[LatentSaccade] DINO secondary error: {e}")
+
+        self._fovea_bbox_cache    = fovea_bbox
+        self._secondary_bbox_cache = secondary_bbox
+        self._cache_step += 1
+        return fovea_bbox, secondary_bbox
+
+    # ── Spatial weight map ────────────────────────────────────────────────
+
+    def _build_weight_map(
+        self,
+        image: np.ndarray,
+        fovea_bbox: Optional[Tuple],
+        secondary_bbox: Optional[Tuple],
+        H_t: int = 32,
+        W_t: int = 32,
+    ) -> Optional[torch.Tensor]:
+        """
+        Build a (H_t * W_t,) float weight vector in raster (row-major) order.
+
+        Returns None if no bboxes are available (disables masking gracefully).
+        """
+        if fovea_bbox is None and secondary_bbox is None:
+            return None
+
+        H, W = image.shape[:2]
+        weight = torch.full((H_t, W_t), self._bg_weight)
+
+        # Apply secondary first (lower priority → gets overridden by fovea)
+        if secondary_bbox is not None:
+            mask2 = _bbox_to_token_mask(
+                secondary_bbox, H_t, W_t, H, W, self._bbox_margin
+            )
+            weight[mask2] = self._place_src_weight
+
+        if fovea_bbox is not None:
+            mask1 = _bbox_to_token_mask(
+                fovea_bbox, H_t, W_t, H, W, self._bbox_margin
+            )
+            weight[mask1] = 1.0  # fovea always wins
+
+        return weight.reshape(-1)  # (H_t * W_t,)
+
+    # ── Public API: masked embeddings (LoRA training) ─────────────────────
+
+    def build_masked_embeds(
+        self,
+        input_ids: torch.Tensor,   # (1, seq_len) int64
+        weight_1d: torch.Tensor,   # (H_t * W_t,) spatial weights, raster order
+        frame_start: int,          # seq index where current frame begins
+    ) -> torch.Tensor:
+        """
+        Embed input_ids and apply spatial weights to current-frame visual tokens.
+
+        Only tokens with IDs in [vis_start, vis_end] (VQ visual tokens) inside
+        the current frame (positions frame_start..) are scaled. Everything else
+        — text, action history, previous frames, structural tokens — is unaffected.
+
+        Gradient-safe: uses clone() so autograd graphs are not broken.
+        Can be called inside or outside torch.no_grad().
+        """
+        embed_fn = self.model.get_input_embeddings()
+        embeds   = embed_fn(input_ids)                # (1, seq_len, hidden)
+
+        frame_ids = input_ids[0, frame_start:]        # (frame_len,)
+        is_visual = (frame_ids >= self.vis_start) & (frame_ids <= self.vis_end)
+        vis_idx   = is_visual.nonzero(as_tuple=True)[0]   # positions within frame
+        n_vis     = vis_idx.numel()
+
+        if n_vis == 0:
+            return embeds
+
+        w = weight_1d[:n_vis].to(dtype=embeds.dtype, device=embeds.device)
+        abs_idx = frame_start + vis_idx               # absolute positions in seq
+
+        new_embeds = embeds.clone()
+        new_embeds[0, abs_idx] = embeds[0, abs_idx] * w.unsqueeze(-1)
+        return new_embeds
+
+    # ── embed_tokens forward hook ─────────────────────────────────────────
+
+    def _make_embed_hook(
+        self,
+        weight_1d: Optional[torch.Tensor],
+        frame_start: int,
+    ):
+        """
+        Returns a one-shot hook that applies spatial masking only on the
+        first (full-sequence) embed_tokens call inside model.generate().
+
+        Subsequent per-step single-token calls (shape[1]==1) are skipped
+        automatically — the hook checks input size, not call count.
+        """
+        fired = [False]
+
+        def hook(module, inp, output):
+            # inp[0]: (batch, seq_len) token IDs passed to embed_tokens
+            seq_len = inp[0].shape[1]
+            if fired[0] or seq_len <= 1:
+                return output  # already applied or single-step generation call
+            fired[0] = True
+
+            if not self._enable_latent_mask or weight_1d is None:
+                return output
+
+            frame_ids = inp[0][0, frame_start:]
+            is_visual = (frame_ids >= self.vis_start) & (frame_ids <= self.vis_end)
+            vis_idx   = is_visual.nonzero(as_tuple=True)[0]
+            n_vis     = vis_idx.numel()
+            if n_vis == 0:
+                return output
+
+            w       = weight_1d[:n_vis].to(dtype=output.dtype, device=output.device)
+            abs_idx = frame_start + vis_idx
+
+            new_out = output.clone()
+            new_out[0, abs_idx] = output[0, abs_idx] * w.unsqueeze(-1)
+            return new_out
+
+        return hook
+
+    # ── preprocess: clean VQ encode (no modification) ─────────────────────
+
+    def preprocess(self, image: np.ndarray):
+        # Delegate to base — clean image → VQ-VAE, zero distribution shift
+        return super().preprocess(image)
+
+    # ── step ──────────────────────────────────────────────────────────────
+
+    def step(self, image: np.ndarray, goal: str):
+        # ── 1. Sync instruction → saccade nouns ───────────────────────────
+        if goal != self._current_instruction:
+            self._current_instruction = goal
+            src, dst = GroundingDINOWrapper.extract_source_dest_nouns(goal)
+            self.saccade.source_noun = src
+            self.saccade.dest_noun   = dst
+            print(f"[LatentSaccade] Instruction → src='{src}'  dst='{dst}'")
+
+        # ── 2. DINO detection → spatial weight map ────────────────────────
+        fovea_bbox, secondary_bbox = self._get_bboxes(image)
+        weight_1d = self._build_weight_map(image, fovea_bbox, secondary_bbox)
+
+        # ── 3. Encode image cleanly (base preprocess, no pixel modification)
+        image_code, gripper_code = self.preprocess(image)
+
+        # ── 4. Build full input sequence (mirrors base step() exactly) ────
+        prompt     = goal
+        video_code = image_code.unsqueeze(1)
+        gripper_code = gripper_code.unsqueeze(1) if self.use_gripper else None
+
+        text_prompt = [self.tokenizer.bos_token + prompt]
+        text_tokens = self.processor.tokenizer(text_prompt)
+        text_tokens = BatchFeature(data={**text_tokens}, tensor_type="pt")
+
+        pos_inputs = self.processor.video_process(
+            text=prompt,
+            video_tokens=video_code,
+            gripper_tokens=gripper_code,
+            context_frames=self.context_frames,
+            frames=self.predict_frames,
+            return_tensors="pt",
+            mode="VLA_Video",
+            padding="longest",
+        )
+
+        if self.video_mode:
+            self.add_image(pos_inputs)
+            history        = self.get_history()
+            action_history = self.get_action_history()
+
+            all_input_ids      = [text_tokens["input_ids"]]
+            all_token_type_ids = [text_tokens["token_type_ids"]]
+            all_attention_mask = [text_tokens["attention_mask"]]
+
+            for i, hist in enumerate(history):
+                if i < len(action_history):
+                    act = action_history[i]
+                    all_input_ids.extend([hist["input_ids"], act])
+                    all_token_type_ids.extend([
+                        hist["token_type_ids"],
+                        torch.zeros_like(act),
+                    ])
+                    all_attention_mask.extend([
+                        hist["attention_mask"],
+                        torch.ones_like(act),
+                    ])
+                else:
+                    all_input_ids.append(hist["input_ids"])
+                    all_token_type_ids.append(hist["token_type_ids"])
+                    all_attention_mask.append(hist["attention_mask"])
+
+            final_inputs = pos_inputs.copy()
+            final_inputs["input_ids"]      = torch.cat(all_input_ids,      dim=1)
+            final_inputs["token_type_ids"] = torch.cat(all_token_type_ids, dim=1)
+            final_inputs["attention_mask"] = torch.cat(all_attention_mask, dim=1)
+        else:
+            final_inputs = pos_inputs
+
+        # ── 5. Locate current frame in the full sequence ──────────────────
+        # Current frame = last history item, always at the tail of final_inputs
+        current_frame_len = pos_inputs["input_ids"].shape[1]
+        frame_start       = final_inputs["input_ids"].shape[1] - current_frame_len
+
+        n_fovea = int((weight_1d >= 1.0).sum())             if weight_1d is not None else 0
+        n_bg    = int((weight_1d <  self._place_src_weight).sum()) if weight_1d is not None else 0
+        print(
+            f"[LatentSaccade] phase={self.saccade.state}  "
+            f"target='{self.saccade.current_target}'  "
+            f"fovea_tokens≈{n_fovea}  bg_tokens≈{n_bg}  "
+            f"fovea_bbox={fovea_bbox}"
+        )
+
+        # ── 6. Register embed hook → generate → remove hook ───────────────
+        embed_module = self.model.get_input_embeddings()
+        hook_fn = self._make_embed_hook(weight_1d, frame_start)
+        handle  = embed_module.register_forward_hook(hook_fn)
+
+        last_token_id = self.tokenizer.pad_token_id - 1
+        allowed = list(
+            range(last_token_id - self.action_tokenizer.vocab_size, last_token_id + 1)
+        ) + [self.eoa_token_id]
+        action_id_processor = ActionIDConstraintLogitsProcessor(allowed)
+
+        try:
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    final_inputs.input_ids.to(self.device),
+                    self.GENERATION_CONFIG,
+                    max_new_tokens=100,
+                    logits_processor=[action_id_processor],
+                    attention_mask=final_inputs.attention_mask.to(self.device),
+                )
+        finally:
+            handle.remove()
+
+        # ── 7. Decode actions (same as base) ──────────────────────────────
+        orig_outputs = outputs[:, final_inputs.input_ids.shape[-1]:]
+        outputs      = orig_outputs[:, :-1]
+        last_token_id_t = torch.tensor(
+            last_token_id, dtype=outputs.dtype, device=outputs.device
+        )
+        processed = last_token_id_t - outputs
+        action_outputs = self.action_tokenizer.decode(
+            processed,
+            time_horizon=self.predict_action_frames,
+            action_dim=self.action_dim,
+        )
+        action = action_outputs[0]
+        if self.video_mode:
+            self.add_action(orig_outputs.detach().cpu())
+
+        action = self.unormalize_action(action)
+        action_pred = action[0:1] if self.use_one_step else action
+        res = [self.transform_action(action[[i], :]) for i in range(action.shape[0])]
+        raw_actions, env_actions = [r[0] for r in res], [r[1] for r in res]
+
+        # ── 8. Update saccade from gripper output ─────────────────────────
+        if env_actions:
+            g = float(np.asarray(env_actions[-1].get("gripper", [1.0])).flat[0])
+            gripper_norm = (1.0 - g) / 2.0    # +1=open→0, −1=close→1
+            transitioned = self.saccade.update(gripper_norm)
+            if transitioned:
+                # Flush bbox cache so DINO re-detects new target immediately
+                self._fovea_bbox_cache    = None
+                self._secondary_bbox_cache = None
+                self._cache_step          = 0
+
+        return raw_actions, env_actions
+
+    def reset(self) -> None:
+        super().reset()
+        self.dino.reset()
+        self._current_instruction    = ""
+        self._fovea_bbox_cache       = None
+        self._secondary_bbox_cache   = None
+        self._cache_step             = 0
+        self.saccade.reset()
