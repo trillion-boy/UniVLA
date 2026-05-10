@@ -51,7 +51,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--emu-hub",    required=True)
     p.add_argument("--vq-hub",     required=True)
-    p.add_argument("--fast-path",  required=True)
+    p.add_argument("--fast-path",  default=None)   # None = paper default
     p.add_argument("--task",       default="widowx_put_eggplant_in_basket")
     p.add_argument("--n-episodes", type=int, default=10)
     p.add_argument("--output-dir", default="/content/baseline_eval")
@@ -65,9 +65,10 @@ TASK_CONFIGS = {
         "robot": "widowx_sink_camera_setup",
         "scene_name": "bridge_table_1_v2",
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
-        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_episode_range": [0, 24],
-        "obs_camera_name": "3rd_view_camera",
+        "obs_camera_name": None,
+        "robot_init_x": 0.127, "robot_init_y": 0.06,
+        "robot_init_quat": [1, 0, 0, 0],
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 120,
     },
     "widowx_carrot_on_plate": {
@@ -75,9 +76,10 @@ TASK_CONFIGS = {
         "robot": "widowx",
         "scene_name": "bridge_table_1_v1",
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png",
-        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_episode_range": [0, 24],
-        "obs_camera_name": "3rd_view_camera",
+        "obs_camera_name": None,
+        "robot_init_x": 0.147, "robot_init_y": 0.028,
+        "robot_init_quat": [1, 0, 0, 0],
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 60,
     },
     "widowx_stack_cube": {
@@ -85,9 +87,10 @@ TASK_CONFIGS = {
         "robot": "widowx",
         "scene_name": "bridge_table_1_v1",
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png",
-        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_episode_range": [0, 24],
-        "obs_camera_name": "3rd_view_camera",
+        "obs_camera_name": None,
+        "robot_init_x": 0.147, "robot_init_y": 0.028,
+        "robot_init_quat": [1, 0, 0, 0],
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 60,
     },
 }
@@ -104,16 +107,21 @@ def build_env(cfg, ep_id):
         control_freq=cfg["control_freq"],
         max_episode_steps=cfg["max_episode_steps"],
         scene_name=cfg["scene_name"],
+        camera_cfgs={"add_segmentation": True},
     )
     for base in [SIMPLER, os.path.join(SIMPLER, "ManiSkill2_real2sim")]:
         cand = os.path.join(base, cfg["rgb_overlay_path"])
         if os.path.exists(cand):
             kw["rgb_overlay_path"] = cand
-            kw["rgb_overlay_cameras"] = cfg["rgb_overlay_cameras"]
-            kw["camera_cfgs"] = {"add_segmentation": True}
             break
     env = build_maniskill2_env(cfg["env_name"], **kw)
-    obs, _ = env.reset(options={"obj_init_options": {"episode_id": ep_id}})
+    obs, _ = env.reset(options={
+        "robot_init_options": {
+            "init_xy": np.array([cfg["robot_init_x"], cfg["robot_init_y"]]),
+            "init_rot_quat": np.array(cfg["robot_init_quat"]),
+        },
+        "obj_init_options": {"episode_id": ep_id},
+    })
     return env, obs
 
 
