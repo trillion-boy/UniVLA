@@ -157,7 +157,7 @@ class EmuVLAInference:
         self.model = Emu3MoE.from_pretrained(
             self.emu_hub,
             torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            attn_implementation="sdpa",
         ).to(device).eval()
 
         self.tokenizer = Emu3Tokenizer.from_pretrained(
@@ -451,7 +451,7 @@ class FoveatedEmuVLAInference(EmuVLAInference):
         self.model = Emu3MoE.from_pretrained(
             self.emu_hub,
             torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
+            attn_implementation="sdpa",
         )
         if getattr(self, "_lora_path", None):
             from peft import PeftModel
