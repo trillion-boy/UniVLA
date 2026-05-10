@@ -65,8 +65,9 @@ TASK_CONFIGS = {
         "robot": "widowx_sink_camera_setup",
         "scene_name": "bridge_table_1_v2",
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
+        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_episode_range": [0, 24],
-        "obs_camera_name": None,
+        "obs_camera_name": "3rd_view_camera",
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 120,
     },
     "widowx_carrot_on_plate": {
@@ -74,8 +75,9 @@ TASK_CONFIGS = {
         "robot": "widowx",
         "scene_name": "bridge_table_1_v1",
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png",
+        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_episode_range": [0, 24],
-        "obs_camera_name": None,
+        "obs_camera_name": "3rd_view_camera",
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 60,
     },
     "widowx_stack_cube": {
@@ -83,8 +85,9 @@ TASK_CONFIGS = {
         "robot": "widowx",
         "scene_name": "bridge_table_1_v1",
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png",
+        "rgb_overlay_cameras": ["3rd_view_camera"],
         "obj_episode_range": [0, 24],
-        "obs_camera_name": None,
+        "obs_camera_name": "3rd_view_camera",
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 60,
     },
 }
@@ -107,6 +110,7 @@ def build_env(cfg, ep_id):
         cand = os.path.join(base, cfg["rgb_overlay_path"])
         if os.path.exists(cand):
             kw["rgb_overlay_path"] = cand
+            kw["rgb_overlay_cameras"] = cfg["rgb_overlay_cameras"]
             break
     env = build_maniskill2_env(cfg["env_name"], **kw)
     obs, _ = env.reset(options={"obj_init_options": {"episode_id": ep_id}})
