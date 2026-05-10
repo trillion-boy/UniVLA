@@ -51,7 +51,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--emu-hub",   required=True)
     p.add_argument("--vq-hub",    required=True)
-    p.add_argument("--fast-path", default=None)   # None = paper default
+    p.add_argument("--fast-path", required=True)
     p.add_argument("--task",      default="widowx_put_eggplant_in_basket")
     p.add_argument("--n-episodes", type=int, default=10)
     p.add_argument("--output-dir", default="/content/latent_saccade_eval")
