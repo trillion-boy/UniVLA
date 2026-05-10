@@ -67,8 +67,6 @@ TASK_CONFIGS = {
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png",
         "obj_episode_range": [0, 24],
         "obs_camera_name": None,
-        "robot_init_x": 0.127, "robot_init_y": 0.06,
-        "robot_init_quat": [1, 0, 0, 0],
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 120,
     },
     "widowx_carrot_on_plate": {
@@ -78,8 +76,6 @@ TASK_CONFIGS = {
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png",
         "obj_episode_range": [0, 24],
         "obs_camera_name": None,
-        "robot_init_x": 0.147, "robot_init_y": 0.028,
-        "robot_init_quat": [1, 0, 0, 0],
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 60,
     },
     "widowx_stack_cube": {
@@ -89,8 +85,6 @@ TASK_CONFIGS = {
         "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png",
         "obj_episode_range": [0, 24],
         "obs_camera_name": None,
-        "robot_init_x": 0.147, "robot_init_y": 0.028,
-        "robot_init_quat": [1, 0, 0, 0],
         "control_freq": 5, "sim_freq": 500, "max_episode_steps": 60,
     },
 }
@@ -115,13 +109,7 @@ def build_env(cfg, ep_id):
             kw["rgb_overlay_path"] = cand
             break
     env = build_maniskill2_env(cfg["env_name"], **kw)
-    obs, _ = env.reset(options={
-        "robot_init_options": {
-            "init_xy": np.array([cfg["robot_init_x"], cfg["robot_init_y"]]),
-            "init_rot_quat": np.array(cfg["robot_init_quat"]),
-        },
-        "obj_init_options": {"episode_id": ep_id},
-    })
+    obs, _ = env.reset(options={"obj_init_options": {"episode_id": ep_id}})
     return env, obs
 
 
