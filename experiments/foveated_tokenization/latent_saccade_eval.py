@@ -57,6 +57,7 @@ def parse_args():
     p.add_argument("--output-dir", default="/content/latent_saccade_eval")
     p.add_argument("--bg-weight",         type=float, default=0.2)
     p.add_argument("--place-src-weight",  type=float, default=0.5)
+    p.add_argument("--fovea-weight",      type=float, default=1.0)
     p.add_argument("--min-grasp-steps",   type=int,   default=15)
     p.add_argument("--consec-close",      type=int,   default=3)
     p.add_argument("--dino-cache-steps",  type=int,   default=5)
@@ -162,6 +163,7 @@ def main():
         bbox_margin=2,
         bg_weight=args.bg_weight,
         place_src_weight=args.place_src_weight,
+        fovea_weight=args.fovea_weight,
         min_grasp_steps=args.min_grasp_steps,
         consecutive_close_required=args.consec_close,
         enable_latent_mask=args.enable_latent_mask,
@@ -238,6 +240,7 @@ def main():
         "success_rate": sr,
         "avg_steps": float(np.mean([r["steps"] for r in results])),
         "config": {
+            "fovea_weight": args.fovea_weight,
             "bg_weight": args.bg_weight,
             "place_src_weight": args.place_src_weight,
             "min_grasp_steps": args.min_grasp_steps,

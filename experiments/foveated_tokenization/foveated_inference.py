@@ -1740,6 +1740,7 @@ class LatentSaccadeEmuVLAInference(EmuVLAInference):
         bbox_margin: int = 2,
         bg_weight: float = 0.2,
         place_src_weight: float = 0.5,
+        fovea_weight: float = 1.0,
         close_thresh: float = 0.5,
         min_grasp_steps: int = 15,
         consecutive_close_required: int = 3,
@@ -1750,6 +1751,7 @@ class LatentSaccadeEmuVLAInference(EmuVLAInference):
         self._current_instruction = ""
         self._bg_weight           = bg_weight
         self._place_src_weight    = place_src_weight
+        self._fovea_weight        = fovea_weight
         self._bbox_margin         = bbox_margin
         self._enable_latent_mask  = enable_latent_mask
 
@@ -1863,7 +1865,7 @@ class LatentSaccadeEmuVLAInference(EmuVLAInference):
             mask1 = _bbox_to_token_mask(
                 fovea_bbox, H_t, W_t, H, W, self._bbox_margin
             )
-            weight[mask1] = 1.0  # fovea always wins
+            weight[mask1] = self._fovea_weight  # fovea always wins
 
         return weight.reshape(-1)  # (H_t * W_t,)
 
