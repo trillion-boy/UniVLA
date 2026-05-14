@@ -55,9 +55,11 @@ def parse_args():
     p.add_argument("--task",       default="widowx_put_eggplant_in_basket")
     p.add_argument("--n-episodes", type=int, default=10)
     p.add_argument("--output-dir", default="/content/baseline_eval")
-    p.add_argument("--save-video",  action="store_true")
-    p.add_argument("--no-overlay",  action="store_true",
+    p.add_argument("--save-video",   action="store_true")
+    p.add_argument("--no-overlay",   action="store_true",
                    help="OOD: rgb_overlay 제거 (순수 시뮬 배경)")
+    p.add_argument("--overlay-path", default=None,
+                   help="OOD: 다른 overlay 이미지 경로 (절대경로)")
     return p.parse_args()
 
 
@@ -95,7 +97,7 @@ TASK_CONFIGS = {
 }
 
 
-def build_env(cfg, ep_id, no_overlay=False):
+def build_env(cfg, ep_id, no_overlay=False, overlay_path=None):
     from simpler_env.utils.env.env_builder import build_maniskill2_env, get_robot_control_mode
     robot = cfg["robot"]
     kw = dict(
@@ -109,12 +111,16 @@ def build_env(cfg, ep_id, no_overlay=False):
         camera_cfgs={"add_segmentation": True},
     )
     if not no_overlay:
-        for base in [SIMPLER, os.path.join(SIMPLER, "ManiSkill2_real2sim")]:
-            cand = os.path.join(base, cfg["rgb_overlay_path"])
-            if os.path.exists(cand):
-                kw["rgb_overlay_path"] = cand
-                kw["rgb_overlay_cameras"] = cfg["rgb_overlay_cameras"]
-                break
+        if overlay_path and os.path.exists(overlay_path):
+            kw["rgb_overlay_path"] = overlay_path
+            kw["rgb_overlay_cameras"] = cfg["rgb_overlay_cameras"]
+        else:
+            for base in [SIMPLER, os.path.join(SIMPLER, "ManiSkill2_real2sim")]:
+                cand = os.path.join(base, cfg["rgb_overlay_path"])
+                if os.path.exists(cand):
+                    kw["rgb_overlay_path"] = cand
+                    kw["rgb_overlay_cameras"] = cfg["rgb_overlay_cameras"]
+                    break
     env = build_maniskill2_env(cfg["env_name"], **kw)
     obs, _ = env.reset(options={"obj_init_options": {"episode_id": ep_id}})
     return env, obs
@@ -149,7 +155,7 @@ def main():
 
     for ep_count, ep_id in enumerate(ep_ids):
         print(f"\n── ep {ep_count:02d} (env_id={ep_id}) ──────────────────────────", flush=True)
-        env, obs    = build_env(task_cfg, ep_id, no_overlay=args.no_overlay)
+        env, obs    = build_env(task_cfg, ep_id, no_overlay=args.no_overlay, overlay_path=args.overlay_path)
         instruction = env.get_language_instruction()
         image       = get_image(env, obs, cam_name)
         print(f"   instruction: {instruction}", flush=True)
@@ -208,6 +214,7 @@ def main():
         "model": "Baseline (EmuVLAInference)",
         "task": args.task,
         "ood_no_overlay": args.no_overlay,
+        "ood_overlay_path": args.overlay_path,
         "success_rate": sr,
         "avg_steps": float(np.mean([r["steps"] for r in results])),
         "episodes": results,
