@@ -71,6 +71,8 @@ def parse_args():
                    help="OOD: rgb_overlay 제거 (순수 시뮬 배경)")
     p.add_argument("--overlay-path",      default=None,
                    help="OOD: 다른 overlay 이미지 경로 (절대경로)")
+    p.add_argument("--brightness",        type=float, default=1.0,
+                   help="OOD: 이미지 밝기 스케일 (1.0=정상, 0.8=어두움 등)")
     return p.parse_args()
 
 
@@ -142,6 +144,14 @@ def get_image(env, obs, cam_name):
     return get_image_from_maniskill2_obs_dict(env, obs, camera_name=cam_name)
 
 
+def apply_brightness(image: np.ndarray, factor: float) -> np.ndarray:
+    if factor == 1.0:
+        return image
+    from PIL import ImageEnhance
+    pil = _PIL.fromarray(image)
+    return np.array(ImageEnhance.Brightness(pil).enhance(factor))
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -185,6 +195,7 @@ def main():
         print(f"   instruction: {instruction}", flush=True)
 
         model.reset()
+        image = apply_brightness(image, args.brightness)
         frames = [image.copy()] if args.save_video else []
         done = truncated = False
         step = 0
@@ -196,7 +207,7 @@ def main():
                 obs, _, done, truncated, _ = env.step(np.concatenate([
                     env_a["world_vector"], env_a["rot_axangle"], env_a["gripper"],
                 ]))
-                image = get_image(env, obs, cam_name)
+                image = apply_brightness(get_image(env, obs, cam_name), args.brightness)
                 if args.save_video and step % 4 == 0:
                     frames.append(image.copy())
                 new_instr = env.get_language_instruction()
@@ -239,6 +250,7 @@ def main():
         "task": args.task,
         "ood_no_overlay": args.no_overlay,
         "ood_overlay_path": args.overlay_path,
+        "ood_brightness": args.brightness,
         "success_rate": sr,
         "avg_steps": float(np.mean([r["steps"] for r in results])),
         "config": {
