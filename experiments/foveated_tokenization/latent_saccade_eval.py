@@ -60,6 +60,7 @@ def parse_args():
     p.add_argument("--fovea-weight",      type=float, default=1.0)
     p.add_argument("--min-grasp-steps",   type=int,   default=15)
     p.add_argument("--consec-close",      type=int,   default=3)
+    p.add_argument("--min-place-steps",   type=int,   default=8)
     p.add_argument("--dino-cache-steps",  type=int,   default=5)
     p.add_argument("--box-threshold",     type=float, default=0.15)
     p.add_argument("--text-threshold",    type=float, default=0.15)
@@ -166,6 +167,7 @@ def main():
         fovea_weight=args.fovea_weight,
         min_grasp_steps=args.min_grasp_steps,
         consecutive_close_required=args.consec_close,
+        min_place_steps=args.min_place_steps,
         enable_latent_mask=args.enable_latent_mask,
         dino_debug_dir=args.dino_debug_dir,
     )

@@ -1179,15 +1179,18 @@ class SaccadeStateMachine:
         close_thresh: float = 0.5,       # gripper_norm ≥ this → "closed"
         min_grasp_steps: int = 15,       # must stay in GRASP ≥ N steps before saccade
         consecutive_close_required: int = 3,  # gripper closed for K consecutive steps
+        min_place_steps: int = 8,        # must stay in PLACE ≥ N steps before reverting
     ):
         self.source_noun  = source_noun
         self.dest_noun    = dest_noun
         self.close_thresh = close_thresh
         self.min_grasp_steps          = min_grasp_steps
         self.consecutive_close_required = consecutive_close_required
+        self.min_place_steps          = min_place_steps
         self._state        = self.GRASP
         self._grasp_steps  = 0   # steps spent in current GRASP phase
         self._close_count  = 0   # consecutive closed-gripper steps
+        self._place_steps  = 0   # steps spent in current PLACE phase
 
     def update(self, gripper_norm: float) -> bool:
         """
@@ -1197,8 +1200,9 @@ class SaccadeStateMachine:
         GRASP → PLACE requires BOTH:
           1. _grasp_steps >= min_grasp_steps  (robot had time to approach)
           2. gripper closed for consecutive_close_required steps in a row
-             (rules out single-step noise outputs)
-        PLACE → GRASP fires immediately when gripper opens (drop/fail).
+        PLACE → GRASP requires BOTH:
+          1. _place_steps >= min_place_steps  (prevents immediate reversal from noise)
+          2. gripper opens (gripper_norm < close_thresh)
         """
         transitioned = False
 
@@ -1217,17 +1221,22 @@ class SaccadeStateMachine:
                 self._state       = self.PLACE
                 self._grasp_steps = 0
                 self._close_count = 0
+                self._place_steps = 0
                 transitioned      = True
                 print(f"[Saccade] grasp → place  (gripper={gripper_norm:.2f}, "
                       f"after {self.min_grasp_steps}+ grasp steps)")
 
         else:  # PLACE phase
-            if gripper_norm < self.close_thresh:
+            self._place_steps += 1
+            if gripper_norm < self.close_thresh and self._place_steps >= self.min_place_steps:
+                done_place_steps  = self._place_steps
                 self._state       = self.GRASP
                 self._grasp_steps = 0
                 self._close_count = 0
+                self._place_steps = 0
                 transitioned      = True
-                print(f"[Saccade] place → grasp  (gripper={gripper_norm:.2f})")
+                print(f"[Saccade] place → grasp  (gripper={gripper_norm:.2f}, "
+                      f"after {done_place_steps} place steps)")
 
         return transitioned
 
@@ -1744,6 +1753,7 @@ class LatentSaccadeEmuVLAInference(EmuVLAInference):
         close_thresh: float = 0.5,
         min_grasp_steps: int = 15,
         consecutive_close_required: int = 3,
+        min_place_steps: int = 8,
         enable_latent_mask: bool = True,
         dino_debug_dir: Optional[str] = None,
     ):
@@ -1767,6 +1777,7 @@ class LatentSaccadeEmuVLAInference(EmuVLAInference):
             close_thresh=close_thresh,
             min_grasp_steps=min_grasp_steps,
             consecutive_close_required=consecutive_close_required,
+            min_place_steps=min_place_steps,
         )
 
         self._fovea_bbox_cache:     Optional[Tuple] = None
