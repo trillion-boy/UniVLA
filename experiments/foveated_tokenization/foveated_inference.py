@@ -2086,6 +2086,9 @@ class LatentSaccadeEmuVLAInference(EmuVLAInference):
         if env_actions:
             g = float(np.asarray(env_actions[-1].get("gripper", [1.0])).flat[0])
             gripper_norm = (1.0 - g) / 2.0    # +1=open→0, −1=close→1
+            print(f"[Saccade-dbg] g={g:.2f} gripper_norm={gripper_norm:.2f} "
+                  f"close_count={self.saccade._close_count} grasp_steps={self.saccade._grasp_steps}",
+                  flush=True)
             transitioned = self.saccade.update(gripper_norm)
             if transitioned:
                 # Flush bbox cache so DINO re-detects new target immediately
