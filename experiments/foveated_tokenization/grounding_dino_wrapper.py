@@ -27,6 +27,13 @@ class GroundingDINOWrapper:
         cx, cy = dino.get_fovea_center(image_rgb, "put eggplant in basket")
     """
 
+    # Remap instruction nouns to better GroundingDINO query strings.
+    # "towel" in SimplerEnv is visually a tablecloth; DINO detects it more
+    # reliably with the correct label.
+    _NOUN_REMAP: dict = {
+        "towel": "tablecloth",
+    }
+
     # Regex patterns to extract the primary object from manipulation instructions
     _VERB_PATTERNS = [
         r"(?:pick up|grasp|grab|lift|take)\s+(?:the\s+)?(\w+(?:\s+\w+)?)",
@@ -175,6 +182,7 @@ class GroundingDINOWrapper:
         """
         self._load_model()
 
+        text_query = self._apply_noun_remap(text_query)
         pil_img = Image.fromarray(image_rgb)
         if not text_query.endswith("."):
             text_query = text_query + "."
@@ -211,6 +219,9 @@ class GroundingDINOWrapper:
         print(f"[DINO] BBox '{text_query.rstrip('.')}' score={score:.3f} "
               f"→ [{x1},{y1},{x2},{y2}]")
         return x1, y1, x2, y2
+
+    def _apply_noun_remap(self, noun: str) -> str:
+        return self._NOUN_REMAP.get(noun.lower().strip(), noun)
 
     def _save_debug_image(
         self,
@@ -291,16 +302,17 @@ class GroundingDINOWrapper:
         biobj_patterns = [
             r"(?:stack|put|place|move|transfer)\s+(?:the\s+)?(.+?)\s+(?:in|on|into|onto|to)\s+(?:the\s+)?(.+?)(?:\s*$|\s+and\s)",
         ]
+        remap = GroundingDINOWrapper._NOUN_REMAP
         for pat in biobj_patterns:
             m = re.search(pat, instr)
             if m:
                 src = m.group(1).strip().rstrip(".,")
                 dst = m.group(2).strip().rstrip(".,")
-                return src, dst
+                return remap.get(src, src), remap.get(dst, dst)
 
         # Fallback: only source
         src = GroundingDINOWrapper.extract_target_noun(instruction)
-        return src, None
+        return remap.get(src, src), None
 
     def get_dual_object_center(
         self,
