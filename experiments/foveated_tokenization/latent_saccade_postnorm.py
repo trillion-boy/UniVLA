@@ -18,6 +18,15 @@ post-RMSNorm hook (this file):
 
 This mirrors the approach used in latent_saccade_tracevla.py.
 
+Recommended weights (fovea-only boost, Method 1)
+------------------------------------------------
+  bg_weight=1.0        — do NOT suppress bg (UniVLA has 93% bg tokens;
+                         suppressing them destroys spatial planning)
+  place_src_weight=1.1 — mild boost for source/dest object region
+  fovea_weight=1.3     — boost target object region
+                         → fovea attention score: 1.3² = 1.69× amplified
+                         → bg attention score: unchanged
+
 Usage
 -----
   from latent_saccade_postnorm import LatentSaccadePostNormEmuVLAInference
@@ -25,7 +34,7 @@ Usage
   model = LatentSaccadePostNormEmuVLAInference(
       emu_hub=..., vq_hub=..., vision_hub=..., device="cuda",
       fast_path=...,
-      bg_weight=0.7, place_src_weight=0.9, fovea_weight=1.1,
+      bg_weight=1.0, place_src_weight=1.1, fovea_weight=1.3,
       ...
   )
   # then use exactly like LatentSaccadeEmuVLAInference

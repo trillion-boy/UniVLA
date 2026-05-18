@@ -58,10 +58,10 @@ def parse_args():
     p.add_argument("--fast-path", required=True)
     p.add_argument("--task",      default="widowx_put_eggplant_in_basket")
     p.add_argument("--n-episodes", type=int, default=10)
-    p.add_argument("--output-dir", default="/content/latent_postnorm_eval")
-    p.add_argument("--bg-weight",         type=float, default=0.7)
-    p.add_argument("--place-src-weight",  type=float, default=0.9)
-    p.add_argument("--fovea-weight",      type=float, default=1.1)
+    p.add_argument("--output-dir", default="/content/latent_postnorm_fovea_eval")
+    p.add_argument("--bg-weight",         type=float, default=1.0)
+    p.add_argument("--place-src-weight",  type=float, default=1.1)
+    p.add_argument("--fovea-weight",      type=float, default=1.3)
     p.add_argument("--min-grasp-steps",   type=int,   default=5)
     p.add_argument("--consec-close",      type=int,   default=3)
     p.add_argument("--min-place-steps",   type=int,   default=8)
@@ -152,10 +152,10 @@ def main():
     task_cfg = TASK_CONFIGS[args.task]
     cam_name = task_cfg["obs_camera_name"]
 
-    print(f"[load] LatentSaccadePostNormEmuVLAInference ...", flush=True)
+    print(f"[load] LatentSaccadePostNormEmuVLAInference (fovea-only boost) ...", flush=True)
     print(f"       bg={args.bg_weight}  src={args.place_src_weight}  "
           f"fovea={args.fovea_weight}  "
-          f"mask={'OFF' if args.disable_latent_mask else 'ON (post-RMSNorm)'}", flush=True)
+          f"mask={'OFF' if args.disable_latent_mask else 'ON (post-RMSNorm, fovea-only)'}", flush=True)
 
     model = LatentSaccadePostNormEmuVLAInference(
         emu_hub=args.emu_hub,
@@ -233,7 +233,7 @@ def main():
     sr   = n_ok / len(results)
     print(f"\n{'='*50}", flush=True)
     print(f"  task: {args.task}", flush=True)
-    print(f"  hook: post-RMSNorm (layernorm hook)", flush=True)
+    print(f"  hook: post-RMSNorm (fovea-only boost, bg=1.0)", flush=True)
     print(f"  weights: bg={args.bg_weight} src={args.place_src_weight} fovea={args.fovea_weight}", flush=True)
     print(f"  성공률: {n_ok}/{len(results)} = {sr:.1%}", flush=True)
     print(f"  평균 스텝: {np.mean([r['steps'] for r in results]):.0f}", flush=True)
