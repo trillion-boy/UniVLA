@@ -260,12 +260,13 @@ class LatentSaccadePostNormEmuVLAInference(LatentSaccadeEmuVLAInference):
         current_frame_len = pos_inputs["input_ids"].shape[1]
         frame_start       = final_inputs["input_ids"].shape[1] - current_frame_len
 
-        n_fovea = int((weight_1d >= 1.0).sum())             if weight_1d is not None else 0
-        n_bg    = int((weight_1d <  self._place_src_weight).sum()) if weight_1d is not None else 0
+        n_fovea = int((weight_1d >= self._fovea_weight).sum())          if weight_1d is not None else 0
+        n_src   = int(((weight_1d >= self._place_src_weight) & (weight_1d < self._fovea_weight)).sum()) if weight_1d is not None else 0
+        n_bg    = int((weight_1d < self._place_src_weight).sum())        if weight_1d is not None else 0
         print(
             f"[PostNorm] phase={self.saccade.state}  "
             f"target='{self.saccade.current_target}'  "
-            f"fovea_tokens≈{n_fovea}  bg_tokens≈{n_bg}  "
+            f"fovea={n_fovea}  src={n_src}  bg={n_bg}  "
             f"fovea_bbox={fovea_bbox}"
         )
 
