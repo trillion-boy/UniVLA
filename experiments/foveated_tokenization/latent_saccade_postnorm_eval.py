@@ -70,6 +70,8 @@ def parse_args():
     p.add_argument("--text-threshold",    type=float, default=0.15)
     p.add_argument("--save-video",        action="store_true")
     p.add_argument("--disable-latent-mask", action="store_true")
+    p.add_argument("--brightness",        type=float, default=1.0,
+                   help="OOD: image brightness scale (1.0=normal, 0.8=dark, etc.)")
     return p.parse_args()
 
 
@@ -145,6 +147,14 @@ def get_image(env, obs, cam_name):
     return get_image_from_maniskill2_obs_dict(env, obs, camera_name=cam_name)
 
 
+def apply_brightness(image: np.ndarray, factor: float) -> np.ndarray:
+    if factor == 1.0:
+        return image
+    from PIL import ImageEnhance
+    pil = _PIL.fromarray(image)
+    return np.array(ImageEnhance.Brightness(pil).enhance(factor))
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -154,7 +164,7 @@ def main():
 
     print(f"[load] LatentSaccadePostNormEmuVLAInference (fovea-only boost) ...", flush=True)
     print(f"       bg={args.bg_weight}  src={args.place_src_weight}  "
-          f"fovea={args.fovea_weight}  "
+          f"fovea={args.fovea_weight}  brightness={args.brightness}  "
           f"mask={'OFF' if args.disable_latent_mask else 'ON (post-RMSNorm, fovea-only)'}", flush=True)
 
     model = LatentSaccadePostNormEmuVLAInference(
@@ -191,6 +201,7 @@ def main():
         print(f"   instruction: {instruction}", flush=True)
 
         model.reset()
+        image = apply_brightness(image, args.brightness)
         frames = [image.copy()] if args.save_video else []
         done = truncated = False
         step = 0
@@ -202,7 +213,7 @@ def main():
                 obs, _, done, truncated, _ = env.step(np.concatenate([
                     env_a["world_vector"], env_a["rot_axangle"], env_a["gripper"],
                 ]))
-                image = get_image(env, obs, cam_name)
+                image = apply_brightness(get_image(env, obs, cam_name), args.brightness)
                 if args.save_video and step % 4 == 0:
                     frames.append(image.copy())
                 new_instr = env.get_language_instruction()
@@ -246,6 +257,7 @@ def main():
         "model": "LatentSaccadePostNorm",
         "task": args.task,
         "hook_location": "post-RMSNorm (input_layernorm output)",
+        "ood_brightness": args.brightness,
         "success_rate": sr,
         "avg_steps": float(np.mean([r["steps"] for r in results])),
         "config": {
@@ -256,6 +268,7 @@ def main():
             "consec_close":     args.consec_close,
             "dino_cache_steps": args.dino_cache_steps,
             "enable_latent_mask": not args.disable_latent_mask,
+            "brightness":       args.brightness,
         },
         "episodes": results,
     }
